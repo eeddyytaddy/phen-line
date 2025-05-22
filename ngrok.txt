@@ -1,0 +1,6 @@
+要先執行linebot_ngrok.py
+再執行ngrok
+再去  https://developers.line.biz/console/channel/2000719182/messaging-api 按Verify
+ 
+ngrok authtoken 2VHdGvdJUDux4hxa4Hy6kNij8kv_34hKAyid7nW2feY6sHRjv
+ngrok http 80

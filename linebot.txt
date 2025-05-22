@@ -1,0 +1,37 @@
+----------------------      澎湖       ---------------------------
+1214筆記
+1.行程規劃 :100% (但是突然要修改程式碼,以前不用,請見 20240607_error.docx)
+2.景點推薦 :100% (使用前要先 收集資料&修改資料 )
+3.景點人潮 :100%
+4.附近搜尋 :100% 景點這個功能沒辦法根據使用者位址有所不同
+5.租車    :100% 
+6.收集資料&修改資料 :100% 
+
+git add .
+git commit -m ""
+git push origin main
+
+
+先執行PH_Linebot.py
+
+再執行ngrok               ngrok start --all
+
+再去 https://developers.line.biz/console/channel/2000719182/messaging-api 更新網址(5000 for line bot)
+
+PH_Linebot.py的第37行要更新PHP_ngrok的網址(80 for php)
+
+XAMPP要開apache
+
+注意一下GOOGLE API
+https://console.cloud.google.com/apis/credentials/key/eb1003ac-b315-45f8-be26-63c7868072f2?authuser=1&hl=zh-tw&project=learned-cirrus-400702
+
+note:
+要修改php記得要去C:\xampp\htdocs 裡面改
+
+
+
+
+
+
+
+ 
