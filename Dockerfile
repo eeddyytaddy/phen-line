@@ -4,7 +4,6 @@ FROM python:3.11.9-slim
 # 2. 建立非 root 使用者（提高安全性）
 RUN useradd -m appuser
 
-
 # 3. 安裝系統套件：build-essential、git、sqlite3、fontconfig，以及 Noto CJK 字型
 RUN apt-get update && \
     apt-get install -y \
@@ -41,8 +40,10 @@ RUN python init_db.py
 # 10. 切換到非 root 使用者
 USER appuser
 
-# 11. 開放 8000 端口
-EXPOSE 10000
+# 11. 預設並暴露由 Render 提供的 PORT
+ARG PORT=10000
+ENV PORT=${PORT}
+EXPOSE ${PORT}
 
-# 12. 啟動 Gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--workers", "1", "--threads", "4"]
+# 12. 啟動 Gunicorn，綁定到 0.0.0.0:${PORT}
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:${PORT}", "--workers", "1", "--threads", "4"]
