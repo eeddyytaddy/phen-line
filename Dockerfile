@@ -42,7 +42,7 @@ RUN python init_db.py
 USER appuser
 
 # 11. 開放 8000 端口
-EXPOSE 8001
+EXPOSE 10000
 
 # 12. 啟動 Gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4"]
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--workers", "1", "--threads", "4"]
