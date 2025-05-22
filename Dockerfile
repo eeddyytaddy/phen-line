@@ -33,6 +33,8 @@ RUN chown -R appuser:appuser /usr/src/app
 
 # 8. 設定環境變數，讓程式知道自己在 Docker 裡面
 ENV APP_ENV=docker
+# 預設 PORT
+ENV PORT=10000
 
 # 9. 以 root 執行初始化資料表（確保 SQLite 檔案可寫入）
 RUN python init_db.py
@@ -40,10 +42,8 @@ RUN python init_db.py
 # 10. 切換到非 root 使用者
 USER appuser
 
-# 11. 預設並暴露由 Render 提供的 PORT
-ARG PORT=10000
-ENV PORT=${PORT}
-EXPOSE ${PORT}
+# 11. 開放預設埠 10000
+EXPOSE 10000
 
-# 12. 啟動 Gunicorn，綁定到 0.0.0.0:${PORT}
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:${PORT}", "--workers", "1", "--threads", "4"]
+# 12. 啟動 Gunicorn，綁定到 0.0.0.0:$PORT
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4"]
