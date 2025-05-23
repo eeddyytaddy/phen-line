@@ -1335,14 +1335,12 @@ def itinerary_stacked_png():
     # 1) 取出過去 24h 的記錄
     df = fetch_data(hours=24).reset_index()  # ts, fn, duration_ms
 
-    # 2) 每 10 分鐘 & 每個 fn 平均耗時 (ms → s)
-    df = (
-        df
-        .groupby([pd.Grouper(key='ts', freq='10min'), 'fn'])['duration_ms']
-        .mean()
-        .reset_index()
-    )
-    fn_avg_s = df.groupby('fn')['duration_ms'].mean().div(1000.0)
+    # 2) 取每個函式最新一次的耗時 (ms → s)
+    latest = df.sort_values('ts').drop_duplicates('fn', keep='last')
+    fn_latest_s = {
+        row['fn']: row['duration_ms'] / 1000.0
+        for _, row in latest.iterrows()
+    }
 
     # 3) 四個子流程對應的函式清單
     CMD_FN = {
@@ -1372,9 +1370,9 @@ def itinerary_stacked_png():
         ],
     }
 
-    # 4) 構造每個 cmd 的四段耗時列表，fn 若不存在則補 0
-    cmd_avg = {
-        cmd: [fn_avg_s.get(fn, 0.0) for fn in fns]
+    # 4) 構造每個 cmd 的最新耗時列表，fn 若不存在則補 0
+    cmd_times = {
+        cmd: [fn_latest_s.get(fn, 0.0) for fn in fns]
         for cmd, fns in CMD_FN.items()
     }
 
@@ -1397,38 +1395,26 @@ def itinerary_stacked_png():
     y_pos = list(range(len(CMD_FN)))
 
     # 計算每條總長度的最大值，用於最後留邊
-    max_total = max(sum(cmd_avg[cmd]) for cmd in CMD_FN)
+    max_total = max(sum(cmd_times[cmd]) for cmd in CMD_FN)
 
-    # 標籤門檻設定（秒）
-    threshold_center = 0.5    # ≥0.5s 置中白字
-    threshold_external = 0.1  # ≥0.1s 外置黑字，小於此就不顯示
+    threshold_center = 0.5   # ≥0.5s 置中白字
+    threshold_external = 0.1 # ≥0.1s 外置黑字
 
     for i, (cmd, fns) in enumerate(CMD_FN.items()):
-        widths = cmd_avg[cmd]
+        widths = cmd_times[cmd]
         left = 0
         for fn, w in zip(fns, widths):
             col = get_color(fn)
             ax.barh(i, w, left=left, height=0.6, color=col)
             label = f"{w:.2f}s"
-
             if w >= threshold_center:
-                # 置中顯示白色標籤
-                ax.text(
-                    left + w/2, i, label,
-                    va='center', ha='center',
-                    fontsize=12, color='white',
-                    clip_on=False
-                )
+                ax.text(left + w/2, i, label,
+                        va='center', ha='center',
+                        fontsize=12, color='white', clip_on=False)
             elif w >= threshold_external:
-                # 外置顯示黑色標籤
-                ax.text(
-                    left + w + 0.02, i, label,
-                    va='center', ha='left',
-                    fontsize=12, color='black',
-                    clip_on=False
-                )
-            # else: 太小不顯示標籤
-
+                ax.text(left + w + 0.02, i, label,
+                        va='center', ha='left',
+                        fontsize=12, color='black', clip_on=False)
             left += w
 
     # 7) 坐標與網格
@@ -1439,7 +1425,6 @@ def itinerary_stacked_png():
     ax.invert_yaxis()
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
-    # 多留 0.5s 的空間給右側標籤
     ax.set_xlim(0, max_total + 0.5)
 
     # 8) 圖例
@@ -1449,21 +1434,14 @@ def itinerary_stacked_png():
         Patch(color=cmap[6], label="Attraction Ranking"),
         Patch(color=cmap[9], label="Data to Database"),
     ]
-    ax.legend(
-        handles=legend_handles,
-        title="Sub-function",
-        title_fontsize=12,
-        fontsize=12,
-        bbox_to_anchor=(1.05, 0.5),
-        loc='center left'
-    )
+    ax.legend(handles=legend_handles, title="Sub-function",
+              title_fontsize=12, fontsize=12,
+              bbox_to_anchor=(1.05, 0.5), loc='center left')
 
     # 9) 底部副標題
-    fig.text(
-        0.5, 0.02,
-        "(b) Itinerary Planning Function (Using Historical Crowd Data)",
-        ha='center', fontsize=16
-    )
+    fig.text(0.5, 0.02,
+             "(b) Itinerary Planning Function (Latest Execution Times)",
+             ha='center', fontsize=16)
 
     # 10) 輸出圖片
     fig.tight_layout(rect=[0, 0.05, 1, 1])
@@ -1471,8 +1449,6 @@ def itinerary_stacked_png():
     plt.close(fig)
     buf.seek(0)
     return send_file(buf, mimetype="image/png")
-
-
 
 # ================= MAIN =========================================== #
 if __name__ == "__main__":
