@@ -99,7 +99,7 @@ line_bot_api   = LineBotApi(ACCESS_TOKEN)
 handler        = WebhookHandler(CHANNEL_SECRET)
 # 常數
 #PHP_ngrok = "https://flask-service2.peterlinebot.ip-ddns.com"
-PHP_NGROK       = "https://penghu-linebot-production.up.railway.app"
+PHP_NGROK       = "https://penghu-linebot.onrender.com"
 GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSeT7kHB3bsE7rmxqJdzG42XfSS9ewNBBZPVH3xxunpYVcyDag/viewform?usp=header"
 GOOGLE_API_KEY  = os.getenv("GOOGLE_MAPS_API_KEY")
 # ─────────────── 每-user 語系設定 & 其他全域狀態 ───────────────
