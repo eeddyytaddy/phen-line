@@ -6,11 +6,12 @@ import urllib.parse
 import pandas as pd
 import csv
 import os
-
+from dotenv import load_dotenv
+load_dotenv()   # 這行會去根目錄找 .env，並把變數載入 os.environ
 from config import RECOMMEND_CSV, HOTEL_DATA_CSV
 
 # 透過環境變數獲取 Google Maps API 金鑰
-api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+api_key  = os.getenv("GOOGLE_MAPS_API_KEY")
 gmaps = googlemaps.Client(key=api_key)
 
 def googlemap_search_nearby(lat, lng, keyword):
