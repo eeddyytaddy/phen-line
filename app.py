@@ -564,51 +564,91 @@ def recommend_general_places(tk, uid):
 @measure_time
 def recommend_sustainable_places(tk, uid):
     """
-    永續觀光推薦：加入性別轉換後的模型呼叫
+    永續觀光推薦（含性別／年齡轉換）
+    1. 取得人潮 Top-5 → 避免推薦
+    2. 讀天氣／溫度／潮汐並做標籤映射
+    3. 依性別‧年齡跑 XGBoost 推薦
+    4. 取景點資料，回傳「說明文字 ＋ 圖片」
     """
     lang = _get_lang(uid)
+
     try:
+        # ---------- 1) 人潮 ----------
         dont_go, crowd_msg = people_high5()
+
+        # ---------- 2) 天氣 ----------
         try:
             raw_weather = Now_weather.weather()
-        except:
+        except Exception:
             raw_weather = "晴"
-        weather_map = {'晴':'晴','多雲':'多雲','陰':'陰','小雨':'下雨','中雨':'下雨','大雨':'下雨','雷陣雨':'下雨'}
+
+        weather_map = {
+            '晴':  '晴',  '多雲': '多雲', '陰': '陰',
+            '小雨': '下雨', '中雨': '下雨', '大雨': '下雨', '雷陣雨': '下雨'
+        }
         w_str = weather_map.get(raw_weather, '晴')
-        try:
-            t = float(Now_weather.temperature())
-        except:
-            t = 25.0
-        try:
-            tide = float(Now_weather.tidal())
-        except:
-            tide = 0.0
 
-        raw_gender = user_gender.get(uid, "")
-        gender_code = FlexMessage.classify_gender(raw_gender)
-        age = user_age.get(uid, 30)
+        # ---------- 3) 溫度‧潮汐 ----------
+        try:
+            temp_c = float(Now_weather.temperature() or 25.0)
+        except Exception:
+            temp_c = 25.0
+        try:
+            tide   = float(Now_weather.tidal() or 0.0)
+        except Exception:
+            tide   = 0.0
 
+        # ---------- 4) 使用者資料 ----------
+        raw_gender  = user_gender.get(uid, "")
+        gender_code = FlexMessage.classify_gender(raw_gender)   # 0/1/2
+        age         = user_age.get(uid, 30)
+
+        # ---------- 5) XGBoost 推薦 ----------
         try:
             rec = ML.XGboost_recommend3(
-                np.array([w_str]), gender_code, age, tide, t, dont_go
+                np.array([w_str]), gender_code, age, tide, temp_c, dont_go
             )
-        except ValueError:
+        except ValueError as e:          # 若出現 unseen label
+            print("XGBoost fallback:", e)
             rec = ML.XGboost_recommend3(
-                np.array(['晴']), gender_code, age, tide, t, dont_go
+                np.array(['晴']), gender_code, age, tide, temp_c, dont_go
             )
+
+        # 如果結果還落在「不建議前往」名單，就再跑一次
         if rec in dont_go:
             rec = ML.XGboost_recommend3(
-                np.array([w_str]), gender_code, age, tide, t, dont_go
+                np.array([w_str]), gender_code, age, tide, temp_c, dont_go
             )
 
+        # ---------- 6) 取景點資訊 ----------
         web, img, maplink = PH_Attractions.Attractions_recommend1(rec)
-        img_url = img if img.startswith(('http://','https://')) else f"https://{img}.jpg"
 
-        #body = f"📊 {crowd_msg}\n{rec}\n{web}\n{maplink}"
-        safe_reply(tk, [ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)])
+        # Robust 圖片 URL
+        if img.startswith(("http://", "https://")):
+            img_url = img
+        elif "imgur.com" in img:         # 轉 i.imgur.com 直連
+            _id = img.rstrip("/").split("/")[-1]
+            img_url = f"https://i.imgur.com/{_id}.jpg"
+        else:
+            img_url = f"https://{img.lstrip('/')}.jpg"
+
+        # ---------- 7) 組訊息並送出 ----------
+        header = f"📊 {crowd_msg}"
+        title  = to_en('永續觀光') if lang == 'en' else '永續觀光'
+        body   = f"{header}\n{title}：{rec}\n{web}\n{maplink}"
+
+        safe_reply(tk, [
+            TextSendMessage(text=body),
+            ImageSendMessage(
+                original_content_url=img_url,
+                preview_image_url   =img_url
+            )
+        ])
+
     except Exception as e:
         print("❌ recommend_sustainable_places error:", e)
         safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)))
+
 
 @measure_time
 def search_nearby_places(replyTK, uid, keyword):
