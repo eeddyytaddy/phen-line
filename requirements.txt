@@ -86,7 +86,7 @@ zope.interface==7.2
 
 # Locust 及其必要依賴，用來執行負載測試並產出 CSV
 locust==2.19.1
-gevent==23.12.2
+gevent==23.9.1
 gevent-websocket==0.10.1
 
 # 用於在 Railway 上啟動 HTTP 服務提供檔案下載
