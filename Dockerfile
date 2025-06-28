@@ -1,47 +1,60 @@
 # ------------------------------------------------------------
-# Dockerfile (updated)
+# 1. 基礎映像
 # ------------------------------------------------------------
-
-# 1. Base image
 FROM python:3.11.9-slim
 
-# 2. Create non‑root user for better security
+# 2. 建立非 root 使用者（提高安全性）
 RUN useradd -m appuser
 
-# 3. Install system packages
+# ------------------------------------------------------------
+# 3. 安裝系統套件
+# ------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
-    build-essential libssl-dev libffi-dev python3-dev git sqlite3 \
-    fontconfig fonts-noto-cjk && \
-    rm -rf /var/lib/apt/lists/*
+    build-essential libssl-dev libffi-dev python3-dev \
+    git sqlite3 fontconfig fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
 
-# 4. Set working directory
+# ------------------------------------------------------------
+# 4. 設定工作目錄
+# ------------------------------------------------------------
 WORKDIR /usr/src/app
 
-# 5. Copy and install Python dependencies (separate cache layer)
+# ------------------------------------------------------------
+# 5. 複製並安裝 Python 依賴
+#    只要 requirements.txt 變動，就會觸發重新 pip install
+# ------------------------------------------------------------
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# 6. Copy application source code
+# ------------------------------------------------------------
+# 6. 複製應用程式碼
+# ------------------------------------------------------------
 COPY . .
 
-# 7. Fix permissions for non‑root user
+# 7. 調整檔案權限
 RUN chown -R appuser:appuser /usr/src/app
 
-# 8. Environment variables
+# ------------------------------------------------------------
+# 8. 設定環境變數
+# ------------------------------------------------------------
 ENV APP_ENV=docker \
     PORT=10000 \
     PYTHONUNBUFFERED=1
 
-# 9. Initialise SQLite database (ignore error if already exists)
+# ------------------------------------------------------------
+# 9. 初始化 SQLite（若已存在則忽略錯誤）
+# ------------------------------------------------------------
 RUN python init_db.py || true
 
-# 10. Switch to non‑root user
+# 10. 切換到非 root 使用者
 USER appuser
 
-# 11. Expose default port (Railway 會自動將 $PORT 映射到 80/443)
+# 11. 對外開放埠（Railway 會自動映射）
 EXPOSE 10000
 
-# 12. Start Gunicorn.
-#    **使用 sh -c 讓 shell 展開 $PORT，避免 "$PORT" 被當成字面字串傳給 gunicorn**
+# ------------------------------------------------------------
+# 12. 啟動 Gunicorn
+#     使用 sh -c 確保 $PORT 在執行時展開
+# ------------------------------------------------------------
 CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 4"]
