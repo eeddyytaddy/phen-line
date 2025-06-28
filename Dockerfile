@@ -1,3 +1,7 @@
+# ------------------------------------------------------------
+# Dockerfile (updated)
+# ------------------------------------------------------------
+
 # 1. Base image
 FROM python:3.11.9-slim
 
@@ -13,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 # 4. Set working directory
 WORKDIR /usr/src/app
 
-# 5. Copy and install Python dependencies first (separate cache layer)
+# 5. Copy and install Python dependencies (separate cache layer)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
@@ -29,14 +33,15 @@ ENV APP_ENV=docker \
     PORT=10000 \
     PYTHONUNBUFFERED=1
 
-# 9. Initialize SQLite database (ignore error if already exists)
+# 9. Initialise SQLite database (ignore error if already exists)
 RUN python init_db.py || true
 
 # 10. Switch to non‑root user
 USER appuser
 
-# 11. Expose default port
+# 11. Expose default port (Railway 會自動將 $PORT 映射到 80/443)
 EXPOSE 10000
 
-# 12. Launch Gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:$PORT", "--workers", "1", "--threads", "4"]
+# 12. Start Gunicorn.
+#    **使用 sh -c 讓 shell 展開 $PORT，避免 "$PORT" 被當成字面字串傳給 gunicorn**
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 4"]
