@@ -1,0 +1,18 @@
+{
+    "destination": "__USERID__",
+    "events": [
+        {
+            "type": "message",
+            "timestamp": __TIMESTAMP__,
+            "source": {
+                "userId": "__USERID__",
+                "type": "user"
+            },
+            "message": {
+                "id": "2",
+                "type": "text",
+                "text": "附近景點"
+            }
+        }
+    ]
+}

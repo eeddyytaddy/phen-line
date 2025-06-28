@@ -1,0 +1,21 @@
+﻿{
+  "destination": "__USERID__",
+  "events": [
+    {
+      "type": "message",
+      "timestamp": __TIMESTAMP__,
+      "source": {
+        "userId": "__USERID__",
+        "type": "user"
+      },
+      "message": {
+        "id": "3",
+        "type": "location",
+        "title": "My spot",
+        "address": "Somewhere",
+        "latitude": 23.566,
+        "longitude": 119.566
+      }
+    }
+  ]
+}

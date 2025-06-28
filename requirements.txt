@@ -1,5 +1,4 @@
 aiosignal==1.3.2
-gunicorn==20.1.0
 anyio==4.8.0
 attrs==25.1.0
 beautifulsoup4==4.13.3
@@ -64,6 +63,7 @@ PySocks==1.7.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2025.1
+requests==2.31.0
 scikit-learn==1.6.1
 scipy==1.15.2
 selenium==4.29.0
@@ -79,8 +79,16 @@ tzdata==2025.1
 urllib3==1.26.20
 websocket-client==1.8.0
 Werkzeug==3.1.3
-wrapt==1.17.2
 wsproto==1.2.0
 xgboost==2.1.4
 zipp==3.21.0
 zope.interface==7.2
+
+# Locust 及其必要依賴，用來執行負載測試並產出 CSV
+locust==2.19.1
+gevent==23.12.2
+gevent-websocket==0.10.1
+
+# 用於在 Railway 上啟動 HTTP 服務提供檔案下載
+gunicorn==20.1.0
+Flask==3.1.0

@@ -1,0 +1,18 @@
+{
+    "events": [
+        {
+            "replyToken": "00000000000000000000000000000000",
+            "type": "message",
+            "timestamp": __TIMESTAMP__,
+            "source": {
+                "userId": "__USERID__",
+                "type": "user"
+            },
+            "message": {
+                "id": "1001",
+                "type": "text",
+                "text": "餐廳"
+            }
+        }
+    ]
+}

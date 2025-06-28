@@ -1,0 +1,19 @@
+{
+    "destination": "xxxxxxxxxx",
+    "events": [
+        {
+            "type": "message",
+            "timestamp": __TIMESTAMP__,
+            "source": {
+                "type": "user",
+                "userId": "__USERID__"
+            },
+            "message": {
+                "id": "100001",
+                "type": "text",
+                "text": "中文"
+            },
+            "replyToken": "fakeToken"
+        }
+    ]
+}

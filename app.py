@@ -97,10 +97,22 @@ import PH_Attractions
 from plan2d1 import csv_up
 from collections import Counter, defaultdict
 from dotenv import load_dotenv
+import os
+from flask import Flask, request, jsonify, send_file
+from prometheus_client import make_wsgi_app
+from werkzeug.middleware.dispatcher import DispatcherMiddleware 
 
+from resource_monitor import start_monitor
+import routes_metrics 
+import metrics
+start_monitor(interval=5) 
 load_dotenv()   # 這行會去根目錄找 .env，並把變數載入 os.environ
 # ─────────────── Flask App ───────────────
 app = Flask(__name__)
+
+metrics.init_metrics(app)  
+import routes_metrics              # 不會產生循環
+routes_metrics.register_png_routes(app)
 
 # LINE Bot 設定
 ACCESS_TOKEN   = os.getenv("LINE_ACCESS_TOKEN",   "your_line_access_token_here")
@@ -1185,6 +1197,7 @@ def handle_postback(event):
 # ================= MAIN =========================================== #
 if __name__ == "__main__":
     print("🚀 Flask server start …")
+    os.environ.setdefault('APP_ENV', 'loadtest')
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",8000)), debug=True)
 
 # ---------------- END OF app.py ------------------------------------
