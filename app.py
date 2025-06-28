@@ -1198,6 +1198,6 @@ def handle_postback(event):
 if __name__ == "__main__":
     print("🚀 Flask server start …")
     os.environ.setdefault('APP_ENV', 'loadtest')
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",8000)), debug=True)
 
 # ---------------- END OF app.py ------------------------------------
