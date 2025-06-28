@@ -54,3 +54,5 @@ EXPOSE 10000
 #     *locust-runner* 會覆蓋為 locust
 # ------------------------------------------------------------
 CMD ["sleep", "infinity"]
+RUN pip install --no-cache-dir locust==2.19.1
+
