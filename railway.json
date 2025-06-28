@@ -1,9 +1,9 @@
 {
   "build": {
     "builder": "dockerfile",
-    "dockerfilePath": "Dockerfile",          // 若檔名是 Dockerfile.locust 就填那個
+    "dockerfilePath": "Dockerfile",      /* 若檔案叫 Dockerfile.locust 就改成該名稱 */
     "args": {
-      "FINAL_USER": "root"                  // 關鍵：把容器使用者設為 root
+      "FINAL_USER": "root"
     }
   }
 }
