@@ -7,7 +7,7 @@
       "startCommand": "gunicorn app:app"
     },
     {
-      "name": "locust-loadtest",
+      "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
       "startCommand": ""             
