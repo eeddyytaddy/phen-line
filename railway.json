@@ -9,7 +9,7 @@
     {
       "name": "locust-loadtest",
       "source": ".",
-      "dockerfilePath": "Dockerfile.loadtest",
+      "dockerfilePath": "Dockerfile.locust",
       "startCommand": ""             
     }
   ]
