@@ -12,11 +12,17 @@
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
       "startCommand": "sh -c 'mkdir -p /data && \
-         locust -f /usr/src/app/tests/locustfile.py \
-           --headless -u 50 -r 10 -t 1m \
-           --host http://phen:$PORT \
-           --csv=/data/run --csv-full-history --stop-timeout 10 \
-         && echo \"=== /data 檔案列表 ===\" && ls -lh /data && sleep infinity'"
+        locust -f /usr/src/app/tests/locustfile.py \
+          --headless -u 50 -r 10 -t 1m \
+          --host http://phen:8080 \
+          --csv=/data/run --csv-full-history --stop-timeout 10 \
+        && echo \"=== /data 檔案列表 ===\" && ls -lh /data && sleep infinity'"
+    }
+  ],
+  "volumes": [
+    {
+      "name": "kind-volume",
+      "mountPath": "/data"
     }
   ]
 }
