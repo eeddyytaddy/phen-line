@@ -25,7 +25,7 @@ from pathlib import Path
 from locust import HttpUser, between, events, task
 
 # ── 0. 参数设定 ───────────────────────────────────────────────
-HOST           = os.getenv("TARGET_HOST", "http://localhost:8000")
+HOST           = os.getenv("TARGET_HOST", "http://localhost:10000")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")   # 留空 ⇒ 不签章
 PAYLOAD_DIR    = Path(__file__).parent / "payloads"
 
