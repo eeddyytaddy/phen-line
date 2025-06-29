@@ -3,14 +3,14 @@
     {
       "name": "phen-line",
       "source": ".",
-      "dockerfilePath": "Dockerfile",    // or leave empty if using Buildpack
+      "dockerfilePath": "Dockerfile",    
       "startCommand": "gunicorn app:app"
     },
     {
       "name": "locust-loadtest",
       "source": ".",
       "dockerfilePath": "Dockerfile.loadtest",
-      "startCommand": ""                // 用 Dockerfile.loadtest 裡的 CMD
+      "startCommand": ""             
     }
   ]
 }
