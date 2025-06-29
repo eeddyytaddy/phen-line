@@ -13,5 +13,11 @@
       "dockerfilePath": "Dockerfile.locust",
       "startCommand": "locust -V"
     }
-  ]
+  ],
+  "deploy": {
+    "runtime": "V2",
+    "numReplicas": 1,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
 }
