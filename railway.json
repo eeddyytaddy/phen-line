@@ -5,19 +5,27 @@
       "name": "phen-line",
       "source": ".",
       "dockerfilePath": "Dockerfile",
-      "startCommand": "gunicorn app:app"
+      // Gunicorn 一定要用 sh -c 才會展開 $PORT
+      "startCommand": "sh -c 'gunicorn app:app -b 0.0.0.0:$PORT'"
     },
     {
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
-      "startCommand": "sh -c 'mkdir -p /data && locust -f /usr/src/app/tests/locustfile.py --headless -u 50 -r 10 -t 1m --csv=/data/run --csv-full-history --stop-timeout 10 || true && echo \"=== /data 檔案列表 ===\" && ls -lh /data && exec sleep infinity'",
-      "volumes": [
-        {
-          "name": "kind-volume",
-          "mountPath": "/data"
-        }
-      ]
+      // 1m 壓測完之後 sleep infinity 保持容器不關閉
+      // 輸出全存在 /data （mount 的 volume）
+      "startCommand": "sh -c 'mkdir -p /data && \
+         locust -f /usr/src/app/tests/locustfile.py \
+           --headless -u 50 -r 10 -t 1m \
+           --host http://phen:8080 \
+           --csv=/data/run --csv-full-history --stop-timeout 10 \
+         && echo \"=== /data 檔案列表 ===\" && ls -lh /data && sleep infinity'"
+    }
+  ],
+  "volumes": [
+    {
+      "name": "kind-volume",
+      "mountPath": "/data"
     }
   ]
 }
