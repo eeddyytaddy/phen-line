@@ -1,16 +1,17 @@
 {
+  "$schema": "https://railway.com/railway.schema.json",
   "services": [
     {
       "name": "phen-line",
       "source": ".",
-      "dockerfilePath": "Dockerfile",    
+      "dockerfilePath": "Dockerfile",
       "startCommand": "gunicorn app:app"
     },
     {
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
-      "startCommand": ""             
+      "startCommand": ""
     }
   ]
 }
