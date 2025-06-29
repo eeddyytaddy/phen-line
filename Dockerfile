@@ -1,13 +1,15 @@
 # ------------------------------------------------------------
-# 1. 基礎映像
+# 1. Base image
 # ------------------------------------------------------------
 FROM python:3.11.9-slim
 
-# 2. 建立非 root 使用者（保留，但不切換）
+# ------------------------------------------------------------
+# 2. Create non-root user (retained, but not switched)
+# ------------------------------------------------------------
 RUN useradd -m appuser
 
 # ------------------------------------------------------------
-# 3. 安裝系統套件
+# 3. Install system dependencies
 # ------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     build-essential libssl-dev libffi-dev python3-dev \
@@ -15,45 +17,52 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------
-# 4. 設定工作目錄
+# 4. Set working directory
 # ------------------------------------------------------------
 WORKDIR /usr/src/app
 
 # ------------------------------------------------------------
-# 5. 安裝 Python 依賴
+# 5. Install Python dependencies
 # ------------------------------------------------------------
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
 # ------------------------------------------------------------
-# 6. 複製程式碼
+# 5-1. Install Locust for load testing
+# ------------------------------------------------------------
+RUN pip install --no-cache-dir locust==2.27.0
+
+# ------------------------------------------------------------
+# 5-2. Add user-site bin to PATH (for root installs)
+# ------------------------------------------------------------
+ENV PATH="/root/.local/bin:${PATH}"
+
+# ------------------------------------------------------------
+# 6. Copy application code
 # ------------------------------------------------------------
 COPY . .
 
 # ------------------------------------------------------------
-# 7. 初始化 SQLite（若已存在則忽略錯誤）
+# 7. Initialize SQLite database (ignore errors if exists)
 # ------------------------------------------------------------
 RUN python init_db.py || true
 
 # ------------------------------------------------------------
-# 8. 環境變數
+# 8. Environment variables
 # ------------------------------------------------------------
 ENV APP_ENV=docker \
     PORT=10000 \
     PYTHONUNBUFFERED=1
 
 # ------------------------------------------------------------
-# 9. 對外開放埠（Railway 會自動映射）
+# 9. Expose application port
 # ------------------------------------------------------------
 EXPOSE 10000
 
 # ------------------------------------------------------------
-# 10. 預設啟動指令
-#     *phen-line* 會覆蓋為 gunicorn
-#     *locust-runner* 會覆蓋為 locust
+# 10. Default command (overridden by Railway services)
+#     - phen-line service uses gunicorn
+#     - locust-loadtest service uses locust
 # ------------------------------------------------------------
 CMD ["sleep", "infinity"]
-RUN pip install --no-cache-dir locust==2.27.0
-
-
