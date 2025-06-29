@@ -1,1 +1,29 @@
 
+# ------------------------------------------------------------
+# Standalone Locust load test service
+# ------------------------------------------------------------
+
+# 1. Use a lightweight official Python image
+FROM python:3.11-slim
+
+# 2. Create and set working directory
+WORKDIR /app
+
+# 3. Copy your Locust test script(s)
+#    Adjust path if your locustfile is located elsewhere
+COPY tests/locustfile.py tests/locustfile.py
+
+# 4. Install Locust
+RUN pip install --no-cache-dir locust==2.27.0
+
+# 5. Default command to run the test in headless mode
+CMD [
+  "locust",
+  "-f", "tests/locustfile.py",
+  "--headless",
+  "-u", "50",
+  "-r", "10",
+  "-t", "10m",
+  "--csv=locust_complete_10",
+  "--csv-full-history"
+]
