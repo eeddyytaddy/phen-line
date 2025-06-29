@@ -11,13 +11,13 @@
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
-      "startCommand": "locust -V"
+      "startCommand": "sh -c 'locust -f /usr/src/app/tests/locustfile.py --headless -u 50 -r 10 -t 1m --csv=/data/run --csv-full-history --stop-timeout 10'",
+      "volumes": [
+        {
+          "name": "melodious-volume",
+          "mountPath": "/data"
+        }
+      ]
     }
-  ],
-  "deploy": {
-    "runtime": "V2",
-    "numReplicas": 1,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
+  ]
 }
