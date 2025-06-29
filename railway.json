@@ -11,7 +11,7 @@
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
-      "startCommand": ""
+      "startCommand": "locust -V"
     }
   ]
 }
