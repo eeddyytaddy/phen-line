@@ -3,7 +3,7 @@
         {
             "replyToken": "00000000000000000000000000000000",
             "type": "message",
-            "timestamp": __TIMESTAMP__,
+            "timestamp": "__TIMESTAMP__",
             "source": {
                 "userId": "__USERID__",
                 "type": "user"
