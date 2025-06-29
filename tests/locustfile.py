@@ -1,30 +1,29 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Locust 壓測腳本
-────────────────────────────────────────────────────────────
-  • 將要打的 JSON payload (*.json) 放到 ./tests/payloads/
-  • 在 STEP_WEIGHTS 加入權重，Locust 會依比例隨機抽 task
+Locust script (placeholder-friendly)
+────────────────────────────────────────────
+‧ ./tests/payloads/*.json 允許 "__USERID__" "__TIMESTAMP__"
+‧ 送出前動態替換成隨機 uid 與現在 timestamp(ms)
 """
 
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Final
 
 from locust import HttpUser, between, events, task
 
-# ────────── 0. 路徑與目標主機 ──────────────────────────────
+# ─── 0. 基本設定 ──────────────────────────────────────────
 BASE_DIR: Final[Path] = Path(__file__).parent
 PAYLOAD_DIR: Final[Path] = BASE_DIR / "payloads"
 
-# 內網 URL（同一 Railway environment 下最穩，也不計流量）
 HOST_DEFAULT = "http://phen-line:10000"
-HOST = os.getenv("TARGET_HOST", HOST_DEFAULT)  # 部署時可用 env 覆蓋
+HOST = os.getenv("TARGET_HOST", HOST_DEFAULT)
 
-# ────────── 1. 每支 payload 的權重 ─────────────────────────
-STEP_WEIGHTS: dict[str, int] = {
+STEP_WEIGHTS = {
     "age_25": 1,
     "gender_male": 1,
     "lang_zh": 1,
@@ -43,47 +42,54 @@ STEP_WEIGHTS: dict[str, int] = {
     "text_sustain": 1,
 }
 
-# ────────── 2. Locust User 類別 ────────────────────────────
+# ─── 1. Locust User ───────────────────────────────────────
 class LineBotUser(HttpUser):
     host = HOST
     wait_time = between(0.3, 1.0)
 
-    # 預先把所有 JSON 讀進記憶體（dict）
-    _cache: dict[str, dict] = {
-        p.stem: json.loads(p.read_text("utf-8")) for p in PAYLOAD_DIR.glob("*.json")
+    # ∘ 先把 json 原始字串讀進 cache
+    _cache_txt: dict[str, str] = {
+        p.stem: p.read_text("utf-8") for p in PAYLOAD_DIR.glob("*.json")
     }
 
     def on_start(self):
-        self.uid = str(uuid.uuid4())
+        self.uid = str(uuid.uuid4())                 # 每個使用者一個 uid
         self.headers = {"Content-Type": "application/json"}
 
-    # ----------- 單一 POST 動作（使用 json= 以 UTF-8 傳送） -----------
+    # --------- 單一 POST（動態替換 placeholder）-------------
     def _post(self, payload_name: str):
-        body = self._cache[payload_name].copy()
-        body["uid"] = self.uid  # 假設 payload 需要 uid，可移除此行
+        txt = self._cache_txt[payload_name]
+        txt = (
+            txt.replace("__USERID__", self.uid)
+               .replace("__TIMESTAMP__", str(int(time.time() * 1000)))
+        )
+        body = json.loads(txt)                       # 轉回 dict
+
         self.client.post(
-            url="/v1/endpoint",          # <<< API 真實路徑請改這裡
-            json=body,                   # 用 json= 自動 UTF-8
+            "/v1/endpoint",                          # <<< API 路徑
+            json=body,                               # 自動 UTF-8
             headers=self.headers,
-            name=payload_name,
+            name=payload_name,                       # 分流名稱
         )
 
-    # ----------- 動態註冊 Task ----------------------------------------
+    # --------- 動態註冊 task -------------------------------
     for _name, _weight in STEP_WEIGHTS.items():
 
-        def _make_task(name=_name):      # 預設參數鎖定字串
+        def _make_task(name=_name):
             @task(weight=STEP_WEIGHTS[name])
             def _(self):
                 self._post(name)
+
             return _
 
         locals()[f"task_{_name}"] = _make_task()
 
-# ────────── 3. 測試結束時可寫入自訂 DB（可刪） ─────────────────
+# ─── 2. (Optional) 測試結束寫入 DB ────────────────────────
 try:
-    from locust_db import save_stats  # 若沒有這工具檔可以刪掉整段
+    from locust_db import save_stats
 except ImportError:
     save_stats = None
+
 
 @events.test_stop.add_listener
 def _(env, **kw):
