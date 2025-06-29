@@ -14,7 +14,7 @@
       "startCommand": "sh -c 'locust -f /usr/src/app/tests/locustfile.py --headless -u 50 -r 10 -t 1m --csv=/data/run --csv-full-history --stop-timeout 10'",
       "volumes": [
         {
-          "name": "melodious-volume",
+          "name": "kind-volume",
           "mountPath": "/data"
         }
       ]
