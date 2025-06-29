@@ -5,22 +5,25 @@
       "name": "phen-line",
       "source": ".",
       "dockerfilePath": "Dockerfile",
+      // Gunicorn 綁在容器的 $PORT，讓外部／內部都能打到
       "startCommand": "sh -c 'gunicorn app:app -b 0.0.0.0:$PORT'"
     },
     {
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
+      // 壓測結束後保留容器、並把 CSV 輸出到 /data
       "startCommand": "sh -c 'mkdir -p /data && \
-        locust -f /usr/src/app/tests/locustfile.py \
-          --headless -u 50 -r 10 -t 1m \
-          --host http://phen:8080 \
-          --csv=/data/run --csv-full-history --stop-timeout 10 \
-        && echo \"=== /data 檔案列表 ===\" && ls -lh /data && sleep infinity'"
+locust -f /usr/src/app/tests/locustfile.py \
+  --headless -u 50 -r 10 -t 1m \
+  --host http://phen-line:8080 \
+  --csv=/data/run --csv-full-history --stop-timeout 10 \
+&& echo \"=== /data 檔案列表 ===\" && ls -lh /data && sleep infinity'"
     }
   ],
   "volumes": [
     {
+      // 跟你在 Dashboard 上看到的一樣
       "name": "kind-volume",
       "mountPath": "/data"
     }
