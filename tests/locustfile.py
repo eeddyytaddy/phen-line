@@ -55,9 +55,11 @@ STEP_WEIGHTS: dict[str, int] = {
     # "new_feature": 1,
 }
 
-# ── 1. 共用签名函数 ────────────────────────────────────────────
+# ── 1. 签名函数 ────────────────────────────────────────────
 def _make_signature(body: bytes) -> str:
+    """根据 LINE CHANNEL_SECRET 对请求 body 做 HMAC-SHA256 签章"""
     return hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256).hexdigest()
+
 
 # ── 2. Locust User 类别 ───────────────────────────────────────
 class LineBotUser(HttpUser):
@@ -65,8 +67,10 @@ class LineBotUser(HttpUser):
     wait_time = between(0.3, 1.0)
 
     # 预读取所有 JSON 到内存，加速循环
-    _cache: dict[str, str] = {
-        p.stem: p.read_text("utf-8") for p in PAYLOAD_DIR.glob("*.json")
+    _cache: dict[str, dict] = {
+        # 使用 utf-8-sig 自动去除 BOM
+        p.stem: json.loads(p.read_text("utf-8-sig"))
+        for p in PAYLOAD_DIR.glob("*.json")
     }
 
     def on_start(self):
@@ -78,14 +82,17 @@ class LineBotUser(HttpUser):
         if name not in self._cache:
             raise ValueError(f"payload '{name}.json' not found")
 
-        # 动态替换占位符
-        body = (
-            self._cache[name]
-            .replace("__USERID__", self.uid)
-            .replace("__TIMESTAMP__", str(int(time.time() * 1000)))
-        ).encode("utf-8")
+        # 复制一份原始 payload，避免修改 cache
+        payload = json.loads(json.dumps(self._cache[name]))
 
-        # 如果需要签章，就加入 HEADER
+        # 动态注入 replyToken、userId、timestamp
+        payload["events"][0]["replyToken"] = str(uuid.uuid4())
+        payload["events"][0]["source"]["userId"] = self.uid
+        payload["events"][0]["timestamp"] = int(time.time() * 1000)
+
+        body = json.dumps(payload).encode("utf-8")
+
+        # 如果需要签章，就加上 X-Line-Signature
         if CHANNEL_SECRET:
             self.hdr["X-Line-Signature"] = _make_signature(body)
 
@@ -112,11 +119,12 @@ class LineBotUser(HttpUser):
                 exception=exc,
             )
 
+
 # ── 3. 测试结束钩子 → 保存自定义报表 ───────────────────────────
 from locust_db import save_stats  # 若不需要可移除此行
 
 @events.test_stop.add_listener
-def on_test_stop(environment, **kwargs):
+async def on_test_stop(environment, **kwargs):
     stats = environment.runner.stats.total
     print(
         f"\nRequests : {stats.num_requests}  |  "
