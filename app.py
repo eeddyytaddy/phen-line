@@ -145,29 +145,53 @@ def _get_lang(uid: str) -> str:
     return user_language.get(uid, 'zh')
 
 # ─────────────── LINE 安全封裝 ───────────────
+used_reply_tokens = set()  # 追蹤已使用的 reply token
 def safe_reply(token, msgs):
+    """安全的 reply 函式，避免重複使用 reply token"""
+    if not token:
+        print("Warning: Reply token is None or empty")
+        return
+    
+    if token in used_reply_tokens:
+        print(f"Warning: Reply token {token} already used, skipping reply")
+        return
+    
     if not isinstance(msgs, list):
         msgs = [msgs]
+    
     try:
         line_bot_api.reply_message(token, msgs)
+        used_reply_tokens.add(token)  # 標記為已使用
+        print(f"Reply sent successfully with token: {token}")
     except Exception as e:
-        print("safe_reply error:", e)
+        print(f"safe_reply error: {e}")
+        used_reply_tokens.add(token)  # 即使失敗也標記，避免重複嘗試
 
 def safe_push(uid, msgs):
+    """推送訊息，不受 reply token 限制"""
     if not isinstance(msgs, list):
         msgs = [msgs]
     try:
         line_bot_api.push_message(uid, msgs)
+        print(f"Push message sent successfully to: {uid}")
     except Exception as e:
-        print("safe_push error:", e)
+        print(f"safe_push error: {e}")
 
 # ─────────────── 背景行程規劃 Thread ───────────────
 def _background_planning(option, reply_token, user_id):
+    """背景行程規劃，使用 push 而非 reply"""
     try:
         process_travel_planning(option, reply_token, user_id)
         user_plan_ready[user_id] = True
+        
+        # 規劃完成後推送通知
+        lang = _get_lang(user_id)
+        safe_push(user_id, TextSendMessage(text=_t("planning_completed", lang)))
+        
     except Exception as e:
-        print("background planning failed:", e)
+        print(f"Background planning failed: {e}")
+        lang = _get_lang(user_id)
+        safe_push(user_id, TextSendMessage(text=_t("planning_failed", lang)))
     finally:
         user_preparing[user_id] = False
 # ========== 以下為行程／人氣／推薦等核心函式 ==========
@@ -920,7 +944,7 @@ def handle_free_command(uid, text, replyTK):
                 desc1 = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
             else:
                 desc1 = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
-
+            
             sys_label = _t("system_route", lang)
             if lang == 'en':
                 desc_sys = (
@@ -954,9 +978,8 @@ def handle_free_command(uid, text, replyTK):
                     "3. 分段逐段顯示（橘線）。\n"
                     "4. 清除使用者路線。"
                 )
-
+            safe_reply(replyTK, FlexMessage.ask_route_option())
             safe_push(uid, [
-                FlexMessage.ask_route_option(),
                 TextSendMessage(text=desc1),
                 TextSendMessage(text=desc_sys),
                 TextSendMessage(text=desc_usr),
@@ -1014,128 +1037,149 @@ def handle_free_command(uid, text, replyTK):
 
 
 # ========== LINE 主路由 ========== #
-@app.route("/", methods=["POST"])
-def linebot_route():
-    body     = request.get_json(silent=True) or {}
-    events   = body.get("events", [])
-    if not events:
-        return "OK"
 
-    ev       = events[0]
-    ev_type  = ev.get("type")
-    uid      = ev["source"]["userId"]
-    lang     = _get_lang(uid)
-    stage    = user_stage[uid]
-    replyTK  = ev.get("replyToken")
+def handle_single_event(ev):
+    """處理單一事件"""
+    ev_type = ev.get("type")
+    uid = ev["source"]["userId"]
+    lang = _get_lang(uid)
+    stage = user_stage.get(uid, 'ask_language')  # 預設階段
+    replyTK = ev.get("replyToken")
+    
+    # 檢查 reply token 是否有效
+    if not replyTK:
+        print("Warning: No reply token in event")
+        return
+    
+    print(f"Handling event type: {ev_type}, user: {uid}, stage: {stage}")
 
     # 1) PostbackEvent：處理按鈕
     if ev_type == "postback":
-        data = ev["postback"]["data"]
+        handle_postback_event(ev, uid, lang, stage, replyTK)
+        return
 
-        # 性別按鈕
-        if data in ("男", "女", "其他"):
-            handle_gender(uid, data, replyTK)
-            return "OK"
+    # 2) MessageEvent：階段式對話 + 自由指令
+    elif ev_type == "message":
+        handle_message_event(ev, uid, lang, stage, replyTK)
+        return
 
-        # 天數按鈕
-        if data in ("兩天一夜", "三天兩夜", "四天三夜", "五天四夜"):
-            user_trip_days[uid]  = data
-            user_preparing[uid]  = True
-            user_plan_ready[uid] = False
-            user_stage[uid]      = 'ready'
-            threading.Thread(
-                target=_background_planning,
-                args=(data, replyTK, uid),
-                daemon=True
-            ).start()
-            safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)))
-            return "OK"
+    # 3) 其他事件類型
+    else:
+        print(f"Unhandled event type: {ev_type}")
+        return
 
-        # 系統路線 / 使用者路線
-        sys_zh, usr_zh = "系統路線", "使用者路線"
-        sys_en, usr_en = to_en(sys_zh), to_en(usr_zh)
-        if data in (sys_zh, sys_en):
+def handle_postback_event(ev, uid, lang, stage, replyTK):
+    """處理 Postback 事件"""
+    data = ev["postback"]["data"]
+    print(f"Postback data: {data}")
+
+    # 性別按鈕
+    if data in ("男", "女", "其他"):
+        handle_gender(uid, data, replyTK)
+        return
+
+    # 天數按鈕
+    if data in ("兩天一夜", "三天兩夜", "四天三夜", "五天四夜"):
+        user_trip_days[uid] = data
+        user_preparing[uid] = True
+        user_plan_ready[uid] = False
+        user_stage[uid] = 'ready'
+        
+        # 先回覆等待訊息
+        safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)))
+        
+        # 然後啟動背景處理
+        threading.Thread(
+            target=_background_planning,
+            args=(data, None, uid),  # 不傳 reply_token 給背景處理
+            daemon=True
+        ).start()
+        return
+
+    # 系統路線 / 使用者路線
+    sys_zh, usr_zh = "系統路線", "使用者路線"
+    sys_en, usr_en = to_en(sys_zh), to_en(usr_zh)
+    
+    if data in (sys_zh, sys_en):
+        try:
             lat, lon = get_location.get_location(LOCATION_FILE)
             uid_qs = urllib.parse.quote_plus(uid)
             url = f"https://system-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
             safe_reply(replyTK, TextSendMessage(text=url))
             user_stage[uid] = 'ready'
-            return "OK"
-        if data in (usr_zh, usr_en):
+        except Exception as e:
+            print(f"Error getting location: {e}")
+            safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)))
+        return
+        
+    if data in (usr_zh, usr_en):
+        try:
             lat, lon = get_location.get_location(LOCATION_FILE)
             uid_qs = urllib.parse.quote_plus(uid)
             url = f"https://user-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
             safe_reply(replyTK, TextSendMessage(text=url))
             user_stage[uid] = 'ready'
-            return "OK"
+        except Exception as e:
+            print(f"Error getting location: {e}")
+            safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)))
+        return
 
-        return "OK"
+def handle_message_event(ev, uid, lang, stage, replyTK):
+    """處理訊息事件"""
+    msg = ev["message"]
+    msgType = msg.get("type")
+    text = (msg.get("text") or "").strip()
+    
+    print(f"Message type: {msgType}, text: {text}, stage: {stage}")
 
-    # 2) MessageEvent：階段式對話 + 自由指令
-    elif ev_type == "message":
-        msg     = ev["message"]
-        msgType = msg.get("type")
-        text    = (msg.get("text") or "").strip()
+    # 根據階段處理訊息
+    if stage == 'ask_language' and msgType == "text":
+        handle_ask_language(uid, replyTK)
+        return
 
-        # 2.1 請選語言
-        if stage == 'ask_language' and msgType == "text":
-            handle_ask_language(uid, replyTK)
-            return "OK"
+    if stage == 'got_language' and msgType == "text":
+        handle_language(uid, text, replyTK)
+        return
 
-        # 2.2 收到語言後請輸入年齡
-        if stage == 'got_language' and msgType == "text":
-            handle_language(uid, text, replyTK)
-            return "OK"
+    if stage == 'got_age' and msgType == "text":
+        try:
+            age = int(text)
+            if 0 <= age <= 120:
+                user_age[uid] = age
+                handle_gender_buttons(uid, lang, replyTK)
+            else:
+                safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)))
+        except ValueError:
+            safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)))
+        return
 
-        # 2.3 年齡回覆
-        if stage == 'got_age' and msgType == "text":
-            try:
-                age = int(text)
-                if 0 <= age <= 120:
-                    user_age[uid] = age
-                    handle_gender_buttons(uid, lang, replyTK)
-                else:
-                    safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)))
-            except:
-                safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)))
-            return "OK"
+    if stage == 'got_gender' and msgType == "text":
+        handle_gender(uid, text, replyTK)
+        return
 
-        # 2.4 性別回覆
-        if stage == 'got_gender' and msgType == "text":
-            handle_gender(uid, text, replyTK)
-            return "OK"
+    if stage == 'got_location' and msgType == "location":
+        handle_location(uid, msg, replyTK)
+        return
 
-        # 2.5 位置訊息
-        if stage == 'got_location' and msgType == "location":
-            handle_location(uid, msg, replyTK)
-            return "OK"
+    if stage == 'got_days' and msgType == "text":
+        handle_days(uid, text, replyTK)
+        return
 
-        # 2.6 天數選擇
-        if stage == 'got_days' and msgType == "text":
-            handle_days(uid, text, replyTK)
-            return "OK"
+    if stage == 'ready' and msgType == "text":
+        handle_free_command(uid, text, replyTK)
+        return
 
-        # 2.7 Ready 階段：自由指令
-        if stage == 'ready' and msgType == "text":
-            handle_free_command(uid, text, replyTK)
-            return "OK"
-
-        # 圖片／貼圖處理
-        if msgType == "image":
-            safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)))
-            return "OK"
-        if msgType == "sticker":
-            safe_reply(replyTK, StickerSendMessage(
-                package_id=msg["packageId"], sticker_id=msg["stickerId"]
-            ))
-            return "OK"
-
-        return "OK"
-
-    # 3) 其他事件
-    else:
-        return "OK"
-
+    # 處理其他訊息類型
+    if msgType == "image":
+        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)))
+        return
+        
+    if msgType == "sticker":
+        safe_reply(replyTK, StickerSendMessage(
+            package_id=msg["packageId"], 
+            sticker_id=msg["stickerId"]
+        ))
+        return
 
 # ========== Postback ========== #
 @handler.add(PostbackEvent)
@@ -1194,6 +1238,20 @@ def handle_postback(event):
 
     # 其餘 Postback 直接忽略
     print("Unhandled postback:", data)
+import threading
+import time
+
+def cleanup_used_tokens():
+    """定期清理已使用的 reply token (每小時執行一次)"""
+    while True:
+        time.sleep(3600)  # 1小時
+        used_reply_tokens.clear()
+        print("Cleaned up used reply tokens")
+
+# 啟動清理執行緒
+cleanup_thread = threading.Thread(target=cleanup_used_tokens, daemon=True)
+cleanup_thread.start()
+
 # ================= MAIN =========================================== #
 if __name__ == "__main__":
     print("🚀 Flask server start …")
