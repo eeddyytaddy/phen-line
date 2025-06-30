@@ -1037,6 +1037,22 @@ def handle_free_command(uid, text, replyTK):
 
 
 # ========== LINE 主路由 ========== #
+@app.route("/", methods=["POST"])
+def linebot_route():
+    body = request.get_json(silent=True) or {}
+    events = body.get("events", [])
+    
+    if not events:
+        return "OK"
+
+    # 處理每個事件
+    for ev in events:  # 改為迴圈處理所有事件
+        try:
+            handle_single_event(ev)
+        except Exception as e:
+            print(f"Error handling event: {e}")
+    
+    return "OK"
 
 def handle_single_event(ev):
     """處理單一事件"""
