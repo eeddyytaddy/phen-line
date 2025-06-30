@@ -5,19 +5,16 @@
       "name": "phen-line",
       "source": ".",
       "dockerfilePath": "Dockerfile",
-      "startCommand": "sh -c 'gunicorn app:app -b 0.0.0.0:$PORT'"
+      "startCommand": "gunicorn app:app"
     },
     {
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
-      "startCommand": "sh -c 'mkdir -p /data && locust -f /usr/src/app/tests/locustfile.py --headless -u 50 -r 10 -t 1m --host https://phen-line-production.up.railway.app --csv=/data/run --csv-full-history --stop-timeout 10 && ls -lh /data && sleep infinity'"
-    }
-  ],
-  "volumes": [
-    {
-      "name": "kind-volume",
-      "mountPath": "/data"
+      "startCommand": "sh -c \"locust -f /usr/src/app/tests/locustfile.py \\
+        --headless -u 50 -r 10 -t 1m \\
+        --csv=/data/run --csv-full-history \\
+        --stop-timeout 10\""
     }
   ]
 }
