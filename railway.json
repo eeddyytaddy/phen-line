@@ -11,7 +11,7 @@
       "name": "locust-runner",
       "source": ".",
       "dockerfilePath": "Dockerfile.locust",
-      "startCommand": "sh -c 'mkdir -p /data && locust -f /usr/src/app/tests/locustfile.py --headless -u 50 -r 10 -t 1m --host http://phen-line:8080 --csv=/data/run --csv-full-history --stop-timeout 10 && echo \"=== /data 檔案列表 ===\" && ls -lh /data && sleep infinity'"
+      "startCommand": "sh -c 'mkdir -p /data && locust -f /usr/src/app/tests/locustfile.py --headless -u 50 -r 10 -t 1m --host https://phen-line-production.up.railway.app --csv=/data/run --csv-full-history --stop-timeout 10 && ls -lh /data && sleep infinity'"
     }
   ],
   "volumes": [
