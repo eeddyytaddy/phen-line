@@ -102,10 +102,10 @@ from flask import Flask, request, jsonify, send_file
 from prometheus_client import make_wsgi_app
 from werkzeug.middleware.dispatcher import DispatcherMiddleware 
 
-from resource_monitor import start_monitor
 import routes_metrics 
 import metrics
-start_monitor(interval=5) 
+from resource_monitor import init_app
+init_app(app, interval=5)   # 只需這一行
 load_dotenv()   # 這行會去根目錄找 .env，並把變數載入 os.environ
 # ─────────────── Flask App ───────────────
 app = Flask(__name__)
