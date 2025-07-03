@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 # ------------------------------------------------------------
 # 5-1. Install Locust for load testing
 # ------------------------------------------------------------
-RUN pip install --no-cache-dir locust==2.27.0
+RUN pip install --no-cache-dir locust==2.29.0
 
 # ------------------------------------------------------------
 # 5-2. Add user-site bin to PATH (for root installs)
