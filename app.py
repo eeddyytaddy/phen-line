@@ -110,6 +110,7 @@ load_dotenv()   # 這行會去根目錄找 .env，並把變數載入 os.environ
 # ─────────────── Flask App ───────────────
 app = Flask(__name__)
 
+init_app(app, interval=5)   # 只需這一行
 metrics.init_metrics(app)  
 import routes_metrics              # 不會產生循環
 routes_metrics.register_png_routes(app)
