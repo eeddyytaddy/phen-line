@@ -84,7 +84,7 @@ xgboost==2.1.4
 zipp==3.21.0
 zope.interface==7.2
 # Locust 及其必要依賴，用來執行負載測試並產出 CSV
-locust==2.19.1
+locust==2.29.0
 gevent==23.9.1
 gevent-websocket==0.10.1
 
