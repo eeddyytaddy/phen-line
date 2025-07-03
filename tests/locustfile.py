@@ -1,21 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Locust script  (patched for clean CSV)
-──────────────────────────────────────
+Locust script  (patched for clean CSV + response-times cache)
+──────────────────────────────────────────────────────────────
 • 將 JSON payload 放到 ./tests/payloads/
 • 在 STEP_WEIGHTS 增加 1 行 (檔名: 權重) 即可納入壓測
 """
 
-# ── 0. Monkey-patch StatsCSVFileWriter BEFORE Locust 建立 writer ─────────────
+# ── 0. 強制開啟 response-times cache + 改寫 CSV Writer ─────────────
 import csv
 from locust import stats as _stats
 
+# 0-a) 根治 ValueError: StatsEntry.use_response_times_cache must be True
+_stats.StatsEntry.use_response_times_cache = True
+
+# 0-b) 將 full-history CSV 改為分號 `;` 分隔並加引號
 class _PatchedWriter(_stats.StatsCSVFileWriter):
-    """
-    1. delimiter 改為 ';'  2. lineterminator='\n'  3. QUOTE_MINIMAL
-    這樣不管文字欄位裡有逗號或 CRLF，都不會打亂欄位數。
-    """
     def __init__(self, environment, base_filepath):
         super().__init__(environment, base_filepath)
         self.stats_history_file.seek(0)
@@ -29,14 +29,14 @@ class _PatchedWriter(_stats.StatsCSVFileWriter):
         self.stats_history_csv_writer.writerow(self.STATS_HISTORY_CSV_HEADERS)
         self.stats_history_file.flush()
 
-_stats.StatsCSVFileWriter = _PatchedWriter  # ⇦ 替換類別
+_stats.StatsCSVFileWriter = _PatchedWriter  # 替換原類別
 
-# ── 1. 其餘相依套件 ──────────────────────────────────────────
+# ── 1. 其他相依套件 ────────────────────────────────────────────
 import hashlib, hmac, json, os, random, time, uuid
 from pathlib import Path
 from locust import HttpUser, between, events, task
 
-# ── 2. 基本參數 ─────────────────────────────────────────────
+# ── 2. 基本參數 ───────────────────────────────────────────────
 HOST           = os.getenv("TARGET_HOST", "http://localhost:10000")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 PAYLOAD_DIR    = Path(__file__).parent / "payloads"
@@ -51,16 +51,11 @@ STEP_WEIGHTS: dict[str, int] = {
     "text_accommodation": 1,
 }
 
-# ── 3. 啟用 response-times cache（避免 ValueError） ──────────
-@events.init.add_listener
-def _enable_stats_cache(env, **_):
-    env.stats.use_response_times_cache = True
-
-# ── 4. 共用函式 ─────────────────────────────────────────────
+# ── 3. 共用函式 ───────────────────────────────────────────────
 def _make_signature(body: bytes) -> str:
     return hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256).hexdigest()
 
-# ── 5. Locust User 類別 ─────────────────────────────────────
+# ── 4. Locust User ───────────────────────────────────────────
 class LineBotUser(HttpUser):
     host = HOST
     wait_time = between(0.3, 1.0)
@@ -75,10 +70,7 @@ class LineBotUser(HttpUser):
         self.hdr = {"Content-Type": "application/json"}
 
     def _post(self, name: str):
-        if name not in self._cache:
-            raise ValueError(f"payload '{name}.json' not found")
-
-        payload = json.loads(json.dumps(self._cache[name]))
+        payload = json.loads(json.dumps(self._cache[name]))  # 深複製
         payload["events"][0]["replyToken"] = str(uuid.uuid4())
         payload["events"][0]["source"]["userId"] = self.uid
         payload["events"][0]["timestamp"] = int(time.time() * 1000)
@@ -103,13 +95,13 @@ class LineBotUser(HttpUser):
                 exception=exc,
             )
 
-# ── 6. 測試結束鉤子（自訂報表，可選） ───────────────────────
-from locust_db import save_stats  # 如果沒有此模組可刪除
+# ── 5. 測試結束鉤子（自訂報表，可選） ───────────────────────
+from locust_db import save_stats  # 如無此模組可移除
 
 @events.test_stop.add_listener
 def _on_test_stop(env, **_):
     st = env.runner.stats.total
-    print(f"\nRequests : {st.num_requests} | Failures : {st.num_failures} | P95 : {st.get_response_time_percentile(0.95):.0f} ms")
+    print(f"\nRequests: {st.num_requests} | Failures: {st.num_failures} | P95: {st.get_response_time_percentile(0.95):.0f} ms")
     try:
         save_stats(env)
     except Exception as e:
