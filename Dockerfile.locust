@@ -14,7 +14,7 @@ WORKDIR /app
 COPY tests/locustfile.py tests/locustfile.py
 
 # 4. Install Locust
-RUN pip install --no-cache-dir locust==2.27.0
+RUN pip install --no-cache-dir locust==2.29.0
 
 # 5. Default command to run the test in headless mode
 CMD [
