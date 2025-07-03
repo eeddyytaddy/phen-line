@@ -3,19 +3,13 @@
 """
 Locust script
 ─────────────
-  • 將 JSON payload 放到 ./tests/payloads/ 目錄
-  • 在 STEP_WEIGHTS 增加一行 (key=文件名, value=權重)
-    Locust 會自動把它納入壓測流程
-
-示例啟動（本機）：
-  TARGET_HOST=http://phen-line \
-  LINE_CHANNEL_SECRET=your_secret \
-  locust -f tests/locustfile.py --headless -u 20 -r 5 -t 2m
+• 將 JSON payload 放到 ./tests/payloads/ 目錄
+• 在 STEP_WEIGHTS 增加一行 (key=檔名, value=權重) 即可納入壓測
 """
 
-import hashlib, hmac, json, os, random, time, uuid
+import hashlib, hmac, json, os, random, time, uuid, csv
 from pathlib import Path
-from locust import HttpUser, between, events, task
+from locust import HttpUser, between, events, task, stats
 
 # ── 0. 參數設定 ───────────────────────────────────────────────
 HOST           = os.getenv("TARGET_HOST", "http://localhost:10000")
@@ -25,35 +19,47 @@ PAYLOAD_DIR    = Path(__file__).parent / "payloads"
 # payload → 權重（數字愈大出現機率愈高）
 STEP_WEIGHTS: dict[str, int] = {
     # phase 0：使用者資料蒐集
-    "lang_zh":      1,
-    "age_25":       1,
-    "gender_male":  1,
-    "location":     1,
-    "text_2days":   1,
-    "text_3days":   1,
-    "text_4days":   1,
-    "text_5days":   1,
+    "lang_zh": 1, "age_25": 1, "gender_male": 1, "location": 1,
+    "text_2days": 1, "text_3days": 1, "text_4days": 1, "text_5days": 1,
     # phase 1：功能指令
-    "text_crowd":        2,
-    "text_recommend":    2,
-    "text_sustain":      1,
-    "text_rental":       1,
-    "text_restaurants":  1,
-    "text_parking":      1,
-    "text_scenic_spots": 1,
-    "text_accommodation":1,
-    # 新增腳本：放 JSON 後在此加一行
-    # "new_feature": 1,
+    "text_crowd": 2, "text_recommend": 2, "text_sustain": 1, "text_rental": 1,
+    "text_restaurants": 1, "text_parking": 1, "text_scenic_spots": 1,
+    "text_accommodation": 1,
 }
 
-# ── 1. 修正：開啟 response-times cache ───────────────────────
+# ── 1-a. 開啟 response-times cache（寫 full-history 需用） ─────────
 @events.init.add_listener
 def enable_response_times_cache(environment, **_):
-    """
-    Locust 在寫 full-history CSV 時需要 stats cache。
-    若未開啟將在 StatsCSVFileWriter 報 ValueError。
-    """
     environment.stats.use_response_times_cache = True
+
+# ── 1-b. 補丁：把 full-history CSV 改成分號分隔＋加引號 ───────────
+@events.init.add_listener
+def patch_csv_writer(environment, **_):
+    """
+    Locust ≤2.27 在 full-history CSV 沒有為文字欄位加引號，且強制逗號分隔，
+    容易造成欄位數錯亂。猴子補丁 StatsCSVFileWriter，使其：
+      • delimiter 改為 ';'
+      • lineterminator 改 '\n'
+      • quoting = csv.QUOTE_MINIMAL
+    """
+    OrigWriter = stats.StatsCSVFileWriter
+
+    class PatchedWriter(OrigWriter):
+        def __init__(self, environment, base_filepath):
+            super().__init__(environment, base_filepath)
+            # 重新初始化 writer
+            self.stats_history_file.seek(0)
+            self.stats_history_file.truncate(0)
+            self.stats_history_csv_writer = csv.writer(
+                self.stats_history_file,
+                delimiter=";",
+                quoting=csv.QUOTE_MINIMAL,
+                lineterminator="\n",
+            )
+            self.stats_history_csv_writer.writerow(self.STATS_HISTORY_CSV_HEADERS)
+            self.stats_history_file.flush()
+
+    stats.StatsCSVFileWriter = PatchedWriter  # 注入補丁
 
 # ── 2. 共用函式 ───────────────────────────────────────────────
 def _make_signature(body: bytes) -> str:
@@ -75,25 +81,23 @@ class LineBotUser(HttpUser):
         self.uid = str(uuid.uuid4())                 # 每個 VU 一個 UID
         self.hdr = {"Content-Type": "application/json"}
 
-    # ── 送出指定 payload ────────────────────────────────────
+    # 送出指定 payload
     def _post(self, name: str):
         if name not in self._cache:
             raise ValueError(f"payload '{name}.json' not found")
 
-        # 深複製 → 填入動態欄位
-        payload = json.loads(json.dumps(self._cache[name]))
+        payload = json.loads(json.dumps(self._cache[name]))  # 深複製
         payload["events"][0]["replyToken"] = str(uuid.uuid4())
         payload["events"][0]["source"]["userId"] = self.uid
         payload["events"][0]["timestamp"] = int(time.time() * 1000)
         body = json.dumps(payload).encode("utf-8")
 
-        # 需簽章則加上 Header
         if CHANNEL_SECRET:
             self.hdr["X-Line-Signature"] = _make_signature(body)
 
         self.client.post("/", data=body, headers=self.hdr, name=f"POST / {name}")
 
-    # ── 單一 task：每次隨機挑一個 payload 送出 ───────────────
+    # 單一 task：每次隨機挑一個 payload
     @task
     def run_all_steps(self):
         payload_name = random.choices(
@@ -113,16 +117,16 @@ class LineBotUser(HttpUser):
                 exception=exc,
             )
 
-# ── 4. 測試結束鉤子 → 儲存自訂報表 ──────────────────────────
+# ── 4. 測試結束鉤子 → 自訂報表 ───────────────────────────────
 from locust_db import save_stats  # 若不需要可移除
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **_):
-    stats = environment.runner.stats.total
+    stats_total = environment.runner.stats.total
     print(
-        f"\nRequests : {stats.num_requests}  |  "
-        f"Failures : {stats.num_failures}  |  "
-        f"P95 : {stats.get_response_time_percentile(0.95):.0f} ms"
+        f"\nRequests : {stats_total.num_requests}  |  "
+        f"Failures : {stats_total.num_failures}  |  "
+        f"P95 : {stats_total.get_response_time_percentile(0.95):.0f} ms"
     )
     try:
         save_stats(environment)
