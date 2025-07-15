@@ -69,7 +69,7 @@ PAYLOAD_DIR    = Path(__file__).parent / "payloads"
 STEP_WEIGHTS = {
     "lang_zh": 1, "age_25": 1, "gender_male": 1, "location": 1,
     "text_2days": 1, "text_3days": 1, "text_4days": 1, "text_5days": 1,
-    "text_crowd": 2, "text_recommend": 2, "text_sustain": 1, "text_rental": 1,
+    "text_crowd": 1, "text_recommend": 1, "text_sustain": 1, "text_rental": 1,
     "text_restaurants": 1, "text_parking": 1, "text_scenic_spots": 1,
     "text_accommodation": 1,
 }
