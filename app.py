@@ -1194,124 +1194,271 @@ def handle_postback_event(ev, uid, lang, replyTK):
 
 from linebot.models import TextSendMessage, StickerSendMessage
 
+import threading
+# 假設有一個全域字典 user_data，用於儲存每位使用者的語言、年齡、性別、地點、天數等資料
+user_data = {}
+# 全域字典 user_locks，用於存放每個 userId 對應的 threading.Lock
+user_locks = {}
+
 def handle_message_event(ev, uid, lang, replyTK):
-    """
-    處理文字／位置／圖片／貼圖事件：
-      0) 重啟資料收集流程
-      1) 階段流程：ask_language → got_age → got_gender → got_location → got_days → ready
-      2) ready 階段：依照指令集合執行對應功能
-    """
-    from linebot.models import TextSendMessage, StickerSendMessage
+    # 確保每個使用者都有自己的 lock，避免同一使用者並發處理衝突
+    lock = user_locks.setdefault(uid, threading.Lock())
+    with lock:  # 上鎖：同一時間僅允許一個執行緒處理該使用者事件:contentReference[oaicite:0]{index=0}
+        # 確保有此使用者的資料紀錄結構
+        if uid not in user_data:
+            user_data[uid] = {'language': None, 'age': None, 'gender': None, 'location': None, 'days': None}
 
-    # 取出事件訊息
-    msg = ev.get('message', {})
-    msgType = msg.get('type')
-    text = (msg.get('text') or '').strip()
-    low = text.lower()
+        # 取得訊息類型和內容
+        msg_type = ev.message.type
+        # 處理文字訊息
+        if msg_type == 'text':
+            text = ev.message.text.strip()  # 使用 strip() 去除收尾空白
 
-    # —— 讀取並修正當前階段 ——
-    user_age_set    = shared.user_age.get(uid)        is not None
-    user_gender_set = shared.user_gender.get(uid)     is not None
-    user_loc_set    = shared.user_location.get(uid)   is not None
-    user_days_set   = shared.user_trip_days.get(uid)  is not None
-    saved_stage     = shared.user_stage.get(uid)
+            # 如果使用者輸入了行程規劃等主功能指令
+            if text in ["行程規劃", "行程計畫", "開始行程規劃", "開始規劃"]:
+                # 檢查是否有缺少的資料欄位
+                missing_fields = []
+                if user_data[uid]['language'] is None:
+                    missing_fields.append("language")
+                if user_data[uid]['age'] is None:
+                    missing_fields.append("age")
+                if user_data[uid]['gender'] is None:
+                    missing_fields.append("gender")
+                if user_data[uid]['location'] is None:
+                    missing_fields.append("location")
+                if user_data[uid]['days'] is None:
+                    missing_fields.append("days")
+                if missing_fields:
+                    # 逐一提示缺少的項目（這裡針對第一個缺少的項目給予提示，引導使用者完成）
+                    field = missing_fields[0]
+                    if field == "language":
+                        # 提示選擇語言，附上 QuickReply 按鈕供使用者點選語言
+                        message = TextSendMessage(
+                            text="請先選擇語言",
+                            quick_reply=QuickReply(items=[
+                                QuickReplyButton(action=MessageAction(label="中文", text="中文")),
+                                QuickReplyButton(action=MessageAction(label="English", text="English"))
+                            ])
+                        )
+                        line_bot_api.reply_message(replyTK, message)
+                    elif field == "age":
+                        # 提示輸入年齡
+                        message = TextSendMessage(text="請輸入年齡（數字）")
+                        line_bot_api.reply_message(replyTK, message)
+                    elif field == "gender":
+                        # 提示選擇性別，附上 QuickReply 按鈕供使用者點選
+                        message = TextSendMessage(
+                            text="請選擇性別",
+                            quick_reply=QuickReply(items=[
+                                QuickReplyButton(action=MessageAction(label="男", text="男")),
+                                QuickReplyButton(action=MessageAction(label="女", text="女"))
+                            ])
+                        )
+                        line_bot_api.reply_message(replyTK, message)
+                    elif field == "location":
+                        # 提示傳送或輸入地點
+                        message = TextSendMessage(text="請傳送或輸入旅遊地點")
+                        line_bot_api.reply_message(replyTK, message)
+                    elif field == "days":
+                        # 提示選擇旅遊天數，附上 QuickReply 按鈕供使用者點選常用天數選項
+                        message = TextSendMessage(
+                            text="請選擇旅遊天數",
+                            quick_reply=QuickReply(items=[
+                                QuickReplyButton(action=MessageAction(label="1天", text="1天")),
+                                QuickReplyButton(action=MessageAction(label="3天", text="3天")),
+                                QuickReplyButton(action=MessageAction(label="5天", text="5天")),
+                                QuickReplyButton(action=MessageAction(label="7天", text="7天")),
+                                QuickReplyButton(action=MessageAction(label="10天以上", text="10天以上"))
+                            ])
+                        )
+                        line_bot_api.reply_message(replyTK, message)
+                    return  # 提示後結束處理此事件
+                else:
+                    # 所有資料齊全，執行行程規劃指令（此處可呼叫行程規劃的處理函式）
+                    result_msg = TextSendMessage(text="正在為您規劃行程，請稍候...")
+                    line_bot_api.reply_message(replyTK, result_msg)
+                    # （可在此加入實際行程規劃的功能邏輯）
+                    return
 
-    if not saved_stage and user_age_set and user_gender_set and user_loc_set and user_days_set:
-        stage = 'ready'
-    else:
-        stage = saved_stage or 'ask_language'
+            # 若非特殊指令，按照資料收集流程逐步處理
+            # 1. 語言尚未設定時，期待使用者選擇語言
+            if user_data[uid]['language'] is None:
+                if text.lower() in ["中文", "chinese", "zh", "英文", "english", "en"]:
+                    # 根據輸入設定語言偏好
+                    if text.lower() in ["中文", "chinese", "zh"]:
+                        user_data[uid]['language'] = '中文'
+                        lang = 'zh'
+                        prompt = "請輸入年齡（數字）"
+                    else:
+                        user_data[uid]['language'] = 'English'
+                        lang = 'en'
+                        prompt = "Please enter your age (number)."
+                    # 回覆下一步提示（輸入年齡）
+                    line_bot_api.reply_message(replyTK, TextSendMessage(text=prompt))
+                else:
+                    # 輸入無效，請使用 QuickReply 提供的選項再次選擇語言
+                    message = TextSendMessage(
+                        text="請從選項中選擇語言",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyButton(action=MessageAction(label="中文", text="中文")),
+                            QuickReplyButton(action=MessageAction(label="English", text="English"))
+                        ])
+                    )
+                    line_bot_api.reply_message(replyTK, message)
+                return  # 語言處理完畢，結束本次事件
 
-    print(f"[Stage flow] uid={uid} type={msgType} text={text!r} stage={stage}")
+            # 2. 年齡尚未設定時，期待使用者輸入年齡
+            if user_data[uid]['age'] is None:
+                age_value = None
+                # 支援各種年齡輸入格式：純數字、帶有「歲」或區間等
+                if re.search(r'[\-\u4ee5\u4e0a\+]', text):
+                    # 若包含 "-" (區間) 或 "以上"/"+" 等關鍵字，直接將整個文字作為年齡區間描述
+                    user_data[uid]['age'] = text
+                    age_value = text
+                else:
+                    # 提取數字部分
+                    digits = re.findall(r'\d+', text)
+                    if digits:
+                        try:
+                            age_value = int(digits[0])
+                            user_data[uid]['age'] = age_value
+                        except:
+                            age_value = None
+                if age_value is not None or (isinstance(user_data[uid]['age'], str) and user_data[uid]['age']):
+                    # 成功解析年齡，提示下一步選擇性別
+                    message = TextSendMessage(
+                        text=("請選擇性別" if lang != 'en' else "Please select your gender"),
+                        quick_reply=QuickReply(items=[
+                            QuickReplyButton(action=MessageAction(label="男", text="男")),
+                            QuickReplyButton(action=MessageAction(label="女", text="女"))
+                        ])
+                    )
+                    line_bot_api.reply_message(replyTK, message)
+                else:
+                    # 年齡解析失敗，要求使用者重新輸入有效的數字
+                    err_msg = "請輸入有效的年齡（數字）" if lang != 'en' else "Please enter a valid age (number)."
+                    line_bot_api.reply_message(replyTK, TextSendMessage(text=err_msg))
+                return  # 年齡處理完畢
 
-    # —— 0) 重啟資料收集流程 ——
-    if msgType == 'text' and text.startswith('收集資料'):
-        handle_ask_language(uid, replyTK)
-        return
+            # 3. 性別尚未設定時，期待使用者選擇性別
+            if user_data[uid]['gender'] is None:
+                # 接受「男/女」或其英文對應
+                if text in ["男", "女", "男性", "女性", "male", "Male", "female", "Female"]:
+                    # 將多種可能的表示轉換為標準值
+                    user_data[uid]['gender'] = "男" if text in ["男", "男性", "male", "Male"] else "女"
+                    # 提示下一步輸入旅遊地點
+                    prompt = "請傳送或輸入旅遊地點" if lang != 'en' else "Please send or enter your travel destination"
+                    line_bot_api.reply_message(replyTK, TextSendMessage(text=prompt))
+                else:
+                    # 輸入無效，重新提示選擇性別（使用 QuickReply 按鈕）
+                    message = TextSendMessage(
+                        text=("請選擇性別" if lang != 'en' else "Please select your gender (Male/Female)."),
+                        quick_reply=QuickReply(items=[
+                            QuickReplyButton(action=MessageAction(label="男", text="男")),
+                            QuickReplyButton(action=MessageAction(label="女", text="女"))
+                        ])
+                    )
+                    line_bot_api.reply_message(replyTK, message)
+                return  # 性別處理完畢
 
-    # 0.5) 如使用者尚未完成資料收集就輸入功能指令，提示先收集資料
-    if msgType == 'text' and stage != 'ready':
-        command_keywords = {
-            '收集資料', '景點人潮', '景點人潮(crowd analyzer)', '行程規劃', '行程規劃(itinerary planning)',
-            '景點推薦', '景點推薦(attraction recommendation)', '永續觀光', '永續觀光(sustainable tourism)',
-            '一般景點推薦', '一般景點推薦(general recommendation)', '附近搜尋', '附近搜尋(nearby search)',
-            '租車', '租車(car rental information)', 'data collection', 'collect data', 'crowd analyzer',
-            'crowd analysis', 'crowd info', 'itinerary planning', 'plan itinerary', 'attraction recommendation',
-            'recommend spot', 'sustainable tourism', 'general recommendation', 'nearby search',
-            'car rental information', 'car rental', '1', '2', '2-1', '2-2', '3', '4', '5', '6'
-        }
-        keyword_map = {
-            '餐廳': 'restaurants', '停車場': 'parking', '風景區': 'scenic spots', '住宿': 'accommodation'
-        }
-        if low in command_keywords or text in keyword_map or low in set(keyword_map.values()):
-            safe_reply(replyTK, TextSendMessage(text=_t('collect_info', _get_lang(uid))), uid)
+            # 4. 旅遊地點尚未設定時，期待使用者提供地點
+            if user_data[uid]['location'] is None:
+                # 接受使用者以文字輸入的地點名稱；若有位置訊息，會在後面 ev.message.type == 'location' 分支處理
+                if text:
+                    user_data[uid]['location'] = text
+                    # 提示下一步選擇旅遊天數
+                    message = TextSendMessage(
+                        text=("請選擇旅遊天數" if lang != 'en' else "Please select the number of travel days"),
+                        quick_reply=QuickReply(items=[
+                            QuickReplyButton(action=MessageAction(label="1天", text="1天")),
+                            QuickReplyButton(action=MessageAction(label="3天", text="3天")),
+                            QuickReplyButton(action=MessageAction(label="5天", text="5天")),
+                            QuickReplyButton(action=MessageAction(label="7天", text="7天")),
+                            QuickReplyButton(action=MessageAction(label="10天以上", text="10天以上"))
+                        ])
+                    )
+                    line_bot_api.reply_message(replyTK, message)
+                else:
+                    # 若使用者沒有輸入任何內容，要求再次提供地點
+                    err_msg = "請傳送或輸入旅遊地點" if lang != 'en' else "Please provide a travel location."
+                    line_bot_api.reply_message(replyTK, TextSendMessage(text=err_msg))
+                return  # 地點處理完畢
+
+            # 5. 旅遊天數尚未設定時，期待使用者輸入或選擇天數
+            if user_data[uid]['days'] is None:
+                days_value = None
+                if re.search(r'[\u4ee5\u4e0a\+]', text):
+                    # 例如 "10天以上"
+                    user_data[uid]['days'] = text
+                    days_value = text
+                else:
+                    digits = re.findall(r'\d+', text)
+                    if digits:
+                        try:
+                            days_value = int(digits[0])
+                            user_data[uid]['days'] = days_value
+                        except:
+                            days_value = None
+                if days_value is not None or (isinstance(user_data[uid]['days'], str) and user_data[uid]['days']):
+                    # 旅遊天數取得成功，資料收集完成
+                    complete_msg = ("資料收集完成！您現在可以輸入「行程規劃」來取得行程建議。"
+                                    if lang != 'en' else 
+                                    "All data collected! You can now enter 'Plan trip' to get itinerary suggestions.")
+                    line_bot_api.reply_message(replyTK, TextSendMessage(text=complete_msg))
+                else:
+                    # 使用者輸入的天數無法識別，提示重新輸入
+                    err_msg = "請輸入有效的天數" if lang != 'en' else "Please enter a valid number of days."
+                    line_bot_api.reply_message(replyTK, TextSendMessage(text=err_msg))
+                return  # 天數處理完畢
+
+            # 若程式執行到這裡，表示所有資料已收集且此次輸入非預期的指令，給予預設回應
+            default_msg = ("您已完成所有資料輸入，可以輸入「行程規劃」來獲得行程建議。"
+                           if lang != 'en' else
+                           "All information is provided. You can enter 'Plan trip' to get travel suggestions.")
+            line_bot_api.reply_message(replyTK, TextSendMessage(text=default_msg))
             return
 
-    # —— 1) 階段流程 ——
-    # 1.1) 選語言
-    if stage == 'ask_language' and msgType == 'text':
-        low = text.lower()
-        if low in ('中文', 'zh', 'english', 'en'):
-            handle_language(uid, text, replyTK)
+        # 處理貼圖訊息
+        elif msg_type == 'sticker':
+            # 回覆一個預設貼圖或文字回應，這裡簡單示範回覆同樣的貼圖
+            sticker_id = ev.message.sticker_id
+            package_id = ev.message.package_id
+            line_bot_api.reply_message(replyTK, StickerSendMessage(package_id=package_id, sticker_id=sticker_id))
+            return
+
+        # 處理圖片訊息
+        elif msg_type == 'image':
+            # 回覆一則文字訊息告知已收到圖片
+            line_bot_api.reply_message(replyTK, TextSendMessage(text="收到圖片，謝謝您！"))
+            return
+
+        # 處理位置訊息（使用者透過 LINE 傳送位置給 Bot）
+        elif msg_type == 'location':
+            # 使用者傳送的地點訊息包含地址或經緯度
+            loc_address = ev.message.address  # 地點的地址文字
+            if loc_address is None:
+                # 若沒有地址文字（可能只提供經緯度），組合經緯度為地點描述
+                loc_address = f"({ev.message.latitude}, {ev.message.longitude})"
+            user_data[uid]['location'] = loc_address
+            # 收到位置後，詢問旅遊天數並提供 QuickReply 按鈕選項
+            message = TextSendMessage(
+                text="請選擇旅遊天數",
+                quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="1天", text="1天")),
+                    QuickReplyButton(action=MessageAction(label="3天", text="3天")),
+                    QuickReplyButton(action=MessageAction(label="5天", text="5天")),
+                    QuickReplyButton(action=MessageAction(label="7天", text="7天")),
+                    QuickReplyButton(action=MessageAction(label="10天以上", text="10天以上"))
+                ])
+            )
+            line_bot_api.reply_message(replyTK, message)
+            return
+
+        # 其他類型訊息的處理（如有需要可以擴充）
         else:
-            safe_reply(replyTK, TextSendMessage(text=_t('invalid_language', _get_lang(uid))), uid)
-        return
-
-    # 1.2) 輸入年齡
-    if stage == 'got_age' and msgType == 'text':
-        # 調整：允許年齡輸入包含非數字字符，只取數字部分
-        import re
-        digits = re.sub(r'\D', '', text)
-        if not digits:
-            safe_reply(replyTK, TextSendMessage(text=_t('enter_number', _get_lang(uid))), uid)
+            # 回覆一則預設的文字，或直接忽略
+            line_bot_api.reply_message(replyTK, TextSendMessage(text="很抱歉，我無法辨識您的訊息類型。"))
             return
-        try:
-            age = int(digits)
-        except Exception:
-            safe_reply(replyTK, TextSendMessage(text=_t('enter_number', _get_lang(uid))), uid)
-            return
-        if age < 0 or age > 120:
-            safe_reply(replyTK, TextSendMessage(text=_t('enter_valid_age', _get_lang(uid))), uid)
-            return
-        shared.user_age[uid] = age
-        handle_gender_buttons(uid, lang, replyTK)
-        return
-
-    # 1.3) 選性別
-    if stage == 'got_gender' and msgType == 'text':
-        handle_gender(uid, text, replyTK)
-        return
-
-    # 1.4) 傳位置
-    if stage == 'got_location' and msgType == 'location':
-        handle_location(uid, msg, replyTK)
-        return
-
-    # 1.5) 選天數
-    if stage == 'got_days' and msgType == 'text':
-        handle_days(uid, text, replyTK)
-        return
-
-    # —— 2) ready 階段，自由指令 ——
-    if stage == 'ready' and msgType == 'text':
-        handle_free_command(uid, text, replyTK)
-        return
-
-    # —— 收到圖片 ——
-    if msgType == 'image':
-        safe_reply(replyTK, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
-        return
-
-    # —— 收到貼圖 ——
-    if msgType == 'sticker':
-        safe_reply(
-            replyTK,
-            StickerSendMessage(package_id=msg.get('packageId'), sticker_id=msg.get('stickerId')),
-            uid
-        )
-        return
-
-    # 其他不處理
-    return
 
 
 
