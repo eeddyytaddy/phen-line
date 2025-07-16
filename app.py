@@ -145,47 +145,40 @@ used_reply_tokens = set()
 
 def safe_reply(token, msgs, uid=None):
     """
-    安全的 reply 函式，避免重複使用 reply token。
-    若 reply_message 發生任何 LineBotApiError，且有傳入 uid，
-    就改用 safe_push 送出；其他例外皆只記錄，不再二次嘗試。
+    安全的 reply 函式：
+    1) 避免重複使用 reply token。
+    2) reply 失敗或 token 過期時，如果有合法 LINE userId (U 開頭)，才 fallback push。
     """
     if not token:
         print("Warning: reply token is None or empty")
         return
 
-    # 避免同一個 token 重複用
     if token in used_reply_tokens:
         print(f"Warning: Reply token {token} already used, skipping reply")
         return
 
-    # 確保 msgs 是 list
     if not isinstance(msgs, list):
         msgs = [msgs]
 
     try:
-        # 嘗試 reply
         line_bot_api.reply_message(token, msgs)
         used_reply_tokens.add(token)
         print(f"✅ Reply sent successfully with token: {token}")
     except LineBotApiError as e:
-        # 取得錯誤細節
         status_code = getattr(e, "status_code", None)
         request_id  = getattr(e, "request_id",  None)
         error_message = e.error.message if hasattr(e, "error") and e.error else str(e)
         print(f"❌ safe_reply error: status_code={status_code}, request_id={request_id}, message={error_message}")
-
-        # 標記 token 已使用，避免重複
         used_reply_tokens.add(token)
 
-        # 無論何種 LineBotApiError，都以 push 做備援（前提須有 uid）
-        if uid:
-            print(f"↪️ safe_reply fallback to push for user {uid}")
+        # 只有在 uid 為真且看起來像 LINE userId (U 開頭) 才 fallback
+        if uid and isinstance(uid, str) and uid.startswith("U"):
+            print(f"↪️ safe_reply fallback to push for LINE user {uid}")
             try:
                 safe_push(uid, msgs)
             except Exception as e2:
                 print(f"   ⚠️ safe_push fallback failed: {e2}")
     except Exception as e:
-        # 其它非 LineBotApiError
         print(f"safe_reply unexpected error: {e}")
 
 
@@ -196,15 +189,20 @@ import json
 
 def safe_push(uid, msgs):
     """
-    1) 確保 msgs 是 list
-    2) 用 get_profile 驗證，404 → 直接 abort
-    3) 分批，每 batch 最多 5 則、印出 payload
-    4) 嘗試 push、失敗時印 status_code、request_id、message
+    安全的 push 函式：
+    1) 只對看起來合法的 LINE userId (U 開頭) 嘗試 get_profile。
+    2) get_profile 若 404 (user not following)，直接跳過。
+    3) 其它錯誤、或 uid 無效，則記錄後 skip。
     """
+    # 只 push 給 LINE userId
+    if not uid or not isinstance(uid, str) or not uid.startswith("U"):
+        print(f"Warning: skip safe_push due to invalid userId: {uid}")
+        return
+
     if not isinstance(msgs, list):
         msgs = [msgs]
 
-    # 驗證用戶為好友的唯一方式
+    # 驗證用戶是否為好友
     try:
         profile = line_bot_api.get_profile(uid)
         print(f"User profile ok: {profile.display_name} ({uid})")
@@ -212,26 +210,27 @@ def safe_push(uid, msgs):
         status = e.status_code
         msg    = e.error.message if e.error else str(e)
         if status == 404:
-            # 用戶沒加好友，推播一定會失敗，直接跳過
             print(f"safe_push aborted: user {uid} not following (404)")
             return
         else:
             print(f"safe_push get_profile error: status_code={status}, message={msg}")
             return
+    except Exception as e:
+        print(f"safe_push unexpected error on get_profile: {e}")
+        return
 
-    # 切 batch、印 payload、呼 push
+    # 分 batch 推送
     batches = [msgs[i:i+5] for i in range(0, len(msgs), 5)]
-    for idx, batch in enumerate(batches,1):
+    for idx, batch in enumerate(batches, 1):
         payloads = []
         for m in batch:
-            if isinstance(m, SendMessage):
+            if hasattr(m, "as_json_dict"):
                 pd = m.as_json_dict()
                 pd.pop("quickReply", None)
                 payloads.append(pd)
             else:
                 payloads.append(str(m))
         print(f"[Batch {idx}/{len(batches)}] payload: {json.dumps(payloads, ensure_ascii=False)}")
-
         try:
             line_bot_api.push_message(uid, batch)
             print(f"[Batch {idx}] push ok ({len(batch)} msgs)")
