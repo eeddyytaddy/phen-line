@@ -1199,7 +1199,7 @@ def handle_message_event(ev, uid, lang, replyTK):
     處理文字／位置／圖片／貼圖事件：
       0) 重啟資料收集流程
       1) 階段流程：ask_language → got_age → got_gender → got_location → got_days → ready
-      2) ready 階段的自由指令（行程規劃、景點人潮、推薦、搜尋、租車等）
+      2) ready 階段：依照指令集合執行對應功能
     """
     from linebot.models import TextSendMessage, StickerSendMessage
 
@@ -1213,13 +1213,13 @@ def handle_message_event(ev, uid, lang, replyTK):
         handle_ask_language(uid, replyTK)
         return
 
-    # 讀取當前階段
+    # —— 讀取當前階段 —— 
     stage = shared.user_stage.get(uid, 'ask_language')
     print(f"[Stage flow] uid={uid} type={msgType} text={text!r} stage={stage}")
 
-    # —— 階段流程 —— 
+    # —— 1) 階段流程 —— 
 
-    # 1) 選語言
+    # 1.1) 選語言
     if stage == 'ask_language' and msgType == "text":
         if low in ("中文", "zh", "english", "en"):
             handle_language(uid, text, replyTK)
@@ -1227,7 +1227,7 @@ def handle_message_event(ev, uid, lang, replyTK):
             safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", lang)), uid)
         return
 
-    # 2) 輸入年齡
+    # 1.2) 輸入年齡
     if stage == 'got_age' and msgType == "text":
         try:
             age = int(text)
@@ -1240,24 +1240,24 @@ def handle_message_event(ev, uid, lang, replyTK):
             safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)), uid)
         return
 
-    # 3) 選性別
+    # 1.3) 選性別
     if stage == 'got_gender' and msgType == "text":
         handle_gender(uid, text, replyTK)
         return
 
-    # 4) 傳位置
+    # 1.4) 傳位置
     if stage == 'got_location' and msgType == "location":
         handle_location(uid, msg, replyTK)
         return
 
-    # 5) 選天數
+    # 1.5) 選天數
     if stage == 'got_days' and msgType == "text":
         handle_days(uid, text, replyTK)
         return
 
-    # —— ready 階段 —— 
+    # —— 2) ready 階段，自由指令 —— 
     if stage == 'ready' and msgType == "text":
-        # 自由指令集合
+        # 指令集合
         recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
         crowd_keys       = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
         plan_keys        = {"行程規劃", "itinerary planning", "6", "行程規劃(itinerary planning)"}
@@ -1267,31 +1267,31 @@ def handle_message_event(ev, uid, lang, replyTK):
         nearby_keys      = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
         rental_keys      = {"租車", "car rental information", "5", "租車(car rental information)"}
         keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
-        is_keyword       = text in keyword_map or low in set(keyword_map.values())
+        is_keyword       = (text in keyword_map) or (low in set(keyword_map.values()))
 
-        # 1) 重新收集資料
+        # 2.1) 重新收集資料
         if low in recollect_keys:
             handle_ask_language(uid, replyTK)
 
-        # 2) 景點人潮
+        # 2.2) 景點人潮
         elif low in crowd_keys:
             send_crowd_analysis(replyTK, uid)
 
-        # 3) 行程規劃
+        # 2.3) 行程規劃
         elif low in plan_keys:
             handle_free_command(uid, text, replyTK)
 
-        # 4) 景點推薦
+        # 2.4) 景點推薦
         elif low in recommend_keys:
             handle_free_command(uid, text, replyTK)
 
-        # 5) 永續 or 一般景點推薦
+        # 2.5) 永續 or 一般景點推薦
         elif low in sustainable_keys:
             recommend_sustainable_places(replyTK, uid)
         elif low in general_keys:
             recommend_general_places(replyTK, uid)
 
-        # 6) 附近搜尋 or 關鍵字搜尋
+        # 2.6) 附近搜尋 or 關鍵字搜尋
         elif low in nearby_keys or is_keyword:
             if low in set(keyword_map.values()):
                 zh = next(k for k, v in keyword_map.items() if v == low)
@@ -1299,18 +1299,18 @@ def handle_message_event(ev, uid, lang, replyTK):
             else:
                 search_nearby_places(replyTK, uid, text)
 
-        # 7) 租車
+        # 2.7) 租車
         elif low in rental_keys:
             send_rental_car(replyTK, uid)
 
         return
 
-    # 收到圖片
+    # —— 收到圖片 —— 
     if msgType == "image":
         safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)), uid)
         return
 
-    # 收到貼圖
+    # —— 收到貼圖 —— 
     if msgType == "sticker":
         safe_reply(
             replyTK,
@@ -1321,9 +1321,6 @@ def handle_message_event(ev, uid, lang, replyTK):
 
     # 其他不處理
     return
-
-
-
 
 
 import threading
