@@ -145,40 +145,53 @@ used_reply_tokens = set()
 
 def safe_reply(token, msgs, uid=None):
     """
-    安全的 reply 函式：
-    1) 避免重複使用 reply token。
-    2) reply 失敗或 token 過期時，如果有合法 LINE userId (U 開頭)，才 fallback push。
+    安全的 reply 函式，避免重複使用 replyToken。
+    測試模式下可跳過實際 LINE 回覆呼叫，防止無效 token 錯誤。
     """
     if not token:
         print("Warning: reply token is None or empty")
         return
 
+    # 避免同一個 token 重複用
     if token in used_reply_tokens:
         print(f"Warning: Reply token {token} already used, skipping reply")
         return
 
+    # **新增：測試環境跳過 LINE API 呼叫**
+    test_mode = os.getenv("TEST_MODE", "0") == "1"
+    # 簡單判斷：token 含有 '-' 視為非 LINE 平台生成（Locust UUID）
+    if test_mode or "-" in token:
+        print(f"[TestMode] Skip reply_message for token: {token}")
+        used_reply_tokens.add(token)
+        # 測試模式下直接視為成功回覆，不呼叫 LINE 平台
+        return
+
+    # 確保 msgs 為 list
     if not isinstance(msgs, list):
         msgs = [msgs]
 
     try:
+        # 嘗試呼叫 LINE 回覆 API
         line_bot_api.reply_message(token, msgs)
         used_reply_tokens.add(token)
         print(f"✅ Reply sent successfully with token: {token}")
     except LineBotApiError as e:
+        # 取得錯誤細節
         status_code = getattr(e, "status_code", None)
-        request_id  = getattr(e, "request_id",  None)
+        request_id  = getattr(e, "request_id", None)
         error_message = e.error.message if hasattr(e, "error") and e.error else str(e)
         print(f"❌ safe_reply error: status_code={status_code}, request_id={request_id}, message={error_message}")
+        # 標記 token 已使用，避免重複
         used_reply_tokens.add(token)
-
-        # 只有在 uid 為真且看起來像 LINE userId (U 開頭) 才 fallback
-        if uid and isinstance(uid, str) and uid.startswith("U"):
-            print(f"↪️ safe_reply fallback to push for LINE user {uid}")
+        # 若有提供 uid，改用 push 補發訊息
+        if uid:
+            print(f"↪️ safe_reply fallback to push for user {uid}")
             try:
                 safe_push(uid, msgs)
             except Exception as e2:
                 print(f"   ⚠️ safe_push fallback failed: {e2}")
     except Exception as e:
+        # 其它非 LineBotApiError 的例外
         print(f"safe_reply unexpected error: {e}")
 
 
@@ -1330,6 +1343,6 @@ cleanup_thread.start()
 if __name__ == "__main__":
     print("🚀 Flask server start …")
     os.environ.setdefault('APP_ENV', 'loadtest')
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",8000)), debug=True)
 
 # ---------------- END OF app.py ------------------------------------
