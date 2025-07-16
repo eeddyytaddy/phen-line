@@ -1209,13 +1209,12 @@ def handle_message_event(ev, uid, lang, replyTK):
     text = (msg.get("text") or "").strip()
     low = text.lower()
 
-    # —— 讀取並修正當前階段 ——
+    # —— 自動階段偵測 ——
     user_age_set    = shared.user_age.get(uid)        is not None
     user_gender_set = shared.user_gender.get(uid)     is not None
     user_loc_set    = shared.user_location.get(uid)   is not None
     user_days_set   = shared.user_trip_days.get(uid)  is not None
     saved_stage     = shared.user_stage.get(uid)
-
     if not saved_stage and user_age_set and user_gender_set and user_loc_set and user_days_set:
         stage = 'ready'
     else:
@@ -1223,66 +1222,108 @@ def handle_message_event(ev, uid, lang, replyTK):
 
     print(f"[Stage flow] uid={uid} type={msgType} text={text!r} stage={stage}")
 
-    # —— 0) 重啟資料收集流程 —— 
-    if msgType == "text" and text.startswith("收集資料"):
+    # —— 0) 重啟資料收集流程 ——
+    recollect_keys = {"收集資料", "data collection", "collect data", "1"}
+    if msgType == "text" and low in recollect_keys:
         handle_ask_language(uid, replyTK)
         return
 
     # —— 1) 階段流程 ——
-    # 1.1) 選語言
-    if stage == 'ask_language' and msgType == "text":
-        low = text.lower()
-        if low in ("中文", "zh", "english", "en"):
-            handle_language(uid, text, replyTK)
-        else:
-            safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", lang)), uid)
-        return
-
-    # 1.2) 輸入年齡
-    if stage == 'got_age' and msgType == "text":
-        try:
-            age = int(text)
-            if 0 <= age <= 120:
-                shared.user_age[uid] = age
-                handle_gender_buttons(uid, lang, replyTK)
+    if stage == 'ask_language':
+        if msgType == "text":
+            if low in ("中文", "zh", "english", "en"):
+                handle_language(uid, text, replyTK)
             else:
-                safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)), uid)
-        except ValueError:
-            safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)), uid)
+                safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", lang)), uid)
         return
 
-    # 1.3) 選性別
-    if stage == 'got_gender' and msgType == "text":
-        handle_gender(uid, text, replyTK)
+    if stage == 'got_age':
+        if msgType == "text":
+            try:
+                age = int(text)
+                if 0 <= age <= 120:
+                    shared.user_age[uid] = age
+                    handle_gender_buttons(uid, lang, replyTK)
+                else:
+                    safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)), uid)
+            except ValueError:
+                safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)), uid)
         return
 
-    # 1.4) 傳位置
-    if stage == 'got_location' and msgType == "location":
-        handle_location(uid, msg, replyTK)
+    if stage == 'got_gender':
+        if msgType == "text":
+            handle_gender(uid, text, replyTK)
         return
 
-    # 1.5) 選天數
-    if stage == 'got_days' and msgType == "text":
-        handle_days(uid, text, replyTK)
+    if stage == 'got_location':
+        if msgType == "location":
+            handle_location(uid, msg, replyTK)
         return
 
-    # —— 2) ready 階段，自由指令 ——
+    if stage == 'got_days':
+        if msgType == "text":
+            handle_days(uid, text, replyTK)
+        return
+
+    # —— 2) ready 階段 ——
     if stage == 'ready' and msgType == "text":
-        handle_free_command(uid, text, replyTK)
+        # 定義指令集合
+        crowd_keys       = {"景點人潮", "crowd analyzer", "crowd analysis", "3","景點人潮(crowd analyzer)"}
+        plan_keys        = {"行程規劃", "itinerary planning", "6","行程規劃(itinerary planning)"}
+        recommend_keys   = {"景點推薦", "attraction recommendation", "2","景點推薦(attraction recommendation)"}
+        sustainable_keys = {"永續觀光", "sustainable tourism", "2-1"}
+        general_keys     = {"一般景點推薦", "general recommendation", "2-2"}
+        nearby_keys      = {"附近搜尋", "nearby search", "4","附近搜尋(nearby search)"}
+        rental_keys      = {"租車", "car rental information", "5", "租車(car rental information)"}
+        keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+        is_keyword       = text in keyword_map or low in set(keyword_map.values())
+
+        # 2.1) 景點人潮
+        if low in crowd_keys:
+            send_crowd_analysis(replyTK, uid)
+            return
+
+        # 2.2) 行程規劃
+        if low in plan_keys:
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 2.3) 景點推薦
+        if low in recommend_keys:
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 2.4) 永續 or 一般景點推薦
+        if low in sustainable_keys or low in general_keys:
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 2.5) 附近搜尋
+        if low in nearby_keys:
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 2.6) 關鍵字搜尋
+        if is_keyword:
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 2.7) 租車資訊
+        if low in rental_keys:
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 2.8) 未知指令
+        safe_reply(replyTK, TextSendMessage(text=_t("invalid_command", lang)), uid)
         return
 
-    # —— 收到圖片 ——
+    # 圖片、貼圖等 fallback
     if msgType == "image":
         safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)), uid)
         return
-
-    # —— 收到貼圖 ——
     if msgType == "sticker":
-        safe_reply(
-            replyTK,
-            StickerSendMessage(package_id=msg.get("packageId"), sticker_id=msg.get("stickerId")),
-            uid
-        )
+        safe_reply(replyTK,
+            StickerSendMessage(package_id=msg.get("packageId"), sticker_id=msg.get("stickerId")), uid)
         return
 
     # 其他不處理
