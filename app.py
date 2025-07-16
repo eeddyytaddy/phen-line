@@ -1232,12 +1232,12 @@ def handle_message_event(ev, uid, lang, replyTK):
         return
 
     # —— 1) 自由指令 ——
-    crowd_keys       = {"景點人潮", "crowd analyzer", "3"}
-    plan_keys        = {"行程規劃", "plan itinerary", "6"}
-    rec_keys         = {"景點推薦", "attraction recommendation", "2"}
+    crowd_keys       = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
+    plan_keys        = {"行程規劃", "plan itinerary", "6", "行程規劃(itinerary planning)"}
+    rec_keys         = {"景點推薦", "attraction recommendation", "2",'景點推薦(attraction recommendation)'}
     sust_keys        = {"永續觀光", "sustainable tourism", "2-1"}
     gen_keys         = {"一般景點推薦", "general recommendation", "2-2"}
-    nearby_keys      = {"附近搜尋", "nearby search", "4"}
+    nearby_keys      = {"附近搜尋", "nearby search", "4","附近搜尋(nearby search)"}
     rental_keys      = {"租車", "car rental information", "5"}
     keyword_map      = {"餐廳":"restaurants", "停車場":"parking", "風景區":"scenic spots", "住宿":"accommodation"}
     is_keyword       = text in keyword_map or low in set(keyword_map.values())
