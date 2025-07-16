@@ -1203,24 +1203,35 @@ def handle_message_event(ev, uid, lang, replyTK):
     """
     from linebot.models import TextSendMessage, StickerSendMessage
 
+    # 取出事件訊息
     msg = ev.get("message", {})
     msgType = msg.get("type")
     text = (msg.get("text") or "").strip()
     low = text.lower()
+
+    # —— 讀取並修正當前階段 ——
+    user_age_set    = shared.user_age.get(uid)        is not None
+    user_gender_set = shared.user_gender.get(uid)     is not None
+    user_loc_set    = shared.user_location.get(uid)   is not None
+    user_days_set   = shared.user_trip_days.get(uid)  is not None
+    saved_stage     = shared.user_stage.get(uid)
+
+    if not saved_stage and user_age_set and user_gender_set and user_loc_set and user_days_set:
+        stage = 'ready'
+    else:
+        stage = saved_stage or 'ask_language'
+
+    print(f"[Stage flow] uid={uid} type={msgType} text={text!r} stage={stage}")
 
     # —— 0) 重啟資料收集流程 —— 
     if msgType == "text" and text.startswith("收集資料"):
         handle_ask_language(uid, replyTK)
         return
 
-    # —— 讀取當前階段 —— 
-    stage = shared.user_stage.get(uid, 'ask_language')
-    print(f"[Stage flow] uid={uid} type={msgType} text={text!r} stage={stage}")
-
-    # —— 1) 階段流程 —— 
-
+    # —— 1) 階段流程 ——
     # 1.1) 選語言
     if stage == 'ask_language' and msgType == "text":
+        low = text.lower()
         if low in ("中文", "zh", "english", "en"):
             handle_language(uid, text, replyTK)
         else:
@@ -1255,62 +1266,17 @@ def handle_message_event(ev, uid, lang, replyTK):
         handle_days(uid, text, replyTK)
         return
 
-    # —— 2) ready 階段，自由指令 —— 
+    # —— 2) ready 階段，自由指令 ——
     if stage == 'ready' and msgType == "text":
-        # 指令集合
-        recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
-        crowd_keys       = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
-        plan_keys        = {"行程規劃", "itinerary planning", "6", "行程規劃(itinerary planning)"}
-        recommend_keys   = {"景點推薦", "attraction recommendation", "2", "景點推薦(attraction recommendation)"}
-        sustainable_keys = {"永續觀光", "sustainable tourism", "2-1"}
-        general_keys     = {"一般景點推薦", "general recommendation", "2-2"}
-        nearby_keys      = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
-        rental_keys      = {"租車", "car rental information", "5", "租車(car rental information)"}
-        keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
-        is_keyword       = (text in keyword_map) or (low in set(keyword_map.values()))
-
-        # 2.1) 重新收集資料
-        if low in recollect_keys:
-            handle_ask_language(uid, replyTK)
-
-        # 2.2) 景點人潮
-        elif low in crowd_keys:
-            send_crowd_analysis(replyTK, uid)
-
-        # 2.3) 行程規劃
-        elif low in plan_keys:
-            handle_free_command(uid, text, replyTK)
-
-        # 2.4) 景點推薦
-        elif low in recommend_keys:
-            handle_free_command(uid, text, replyTK)
-
-        # 2.5) 永續 or 一般景點推薦
-        elif low in sustainable_keys:
-            recommend_sustainable_places(replyTK, uid)
-        elif low in general_keys:
-            recommend_general_places(replyTK, uid)
-
-        # 2.6) 附近搜尋 or 關鍵字搜尋
-        elif low in nearby_keys or is_keyword:
-            if low in set(keyword_map.values()):
-                zh = next(k for k, v in keyword_map.items() if v == low)
-                search_nearby_places(replyTK, uid, zh)
-            else:
-                search_nearby_places(replyTK, uid, text)
-
-        # 2.7) 租車
-        elif low in rental_keys:
-            send_rental_car(replyTK, uid)
-
+        handle_free_command(uid, text, replyTK)
         return
 
-    # —— 收到圖片 —— 
+    # —— 收到圖片 ——
     if msgType == "image":
         safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)), uid)
         return
 
-    # —— 收到貼圖 —— 
+    # —— 收到貼圖 ——
     if msgType == "sticker":
         safe_reply(
             replyTK,
