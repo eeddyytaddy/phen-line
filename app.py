@@ -827,8 +827,9 @@ def handle_ask_language(uid, replyTK):
         QuickReplyButton(action=MessageAction(label="中文(Chinese)", text="中文")),
         QuickReplyButton(action=MessageAction(label="英文(English)", text="English"))
     ])
-    safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr),uid)
-    shared.user_stage[uid] = 'got_language'
+    safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr), uid)
+    # 原來是 got_language，改成 ask_language
+    shared.user_stage[uid] = 'ask_language'
 
 @measure_time
 def handle_language(uid, text, replyTK):
@@ -1216,31 +1217,34 @@ from linebot.models import TextSendMessage, StickerSendMessage
 def handle_message_event(ev, uid, lang, replyTK):
     """
     處理文字／位置／圖片／貼圖事件：
-    0) 重啟資料收集流程
-    1) 自由指令
-    2) 階段流程：語言→年齡→性別→位置→天數→ready
+      0) 重啟資料收集流程
+      1) 自由指令
+      2) 階段流程：語言 → 年齡 → 性別 → 位置 → 天數 → ready
     """
+    from linebot.models import (
+        TextSendMessage, StickerSendMessage
+    )
+
     msg = ev.get("message", {})
     msgType = msg.get("type")
     text = (msg.get("text") or "").strip()
     low = text.lower()
 
-    # —— 0) 重啟資料收集流程 ——
-    # 只要使用者輸入以「收集資料」開頭，就觸發語言選擇
+    # —— 0) 重啟資料收集流程 —— 
     if msgType == "text" and text.startswith("收集資料"):
         handle_ask_language(uid, replyTK)
         return
 
-    # —— 1) 自由指令 ——
-    crowd_keys       = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
-    plan_keys        = {"行程規劃", "plan itinerary", "6", "行程規劃(itinerary planning)"}
-    rec_keys         = {"景點推薦", "attraction recommendation", "2",'景點推薦(attraction recommendation)'}
-    sust_keys        = {"永續觀光", "sustainable tourism", "2-1"}
-    gen_keys         = {"一般景點推薦", "general recommendation", "2-2"}
-    nearby_keys      = {"附近搜尋", "nearby search", "4","附近搜尋(nearby search)"}
-    rental_keys      = {"租車", "car rental information", "5"}
-    keyword_map      = {"餐廳":"restaurants", "停車場":"parking", "風景區":"scenic spots", "住宿":"accommodation"}
-    is_keyword       = text in keyword_map or low in set(keyword_map.values())
+    # —— 1) 自由指令 —— 
+    crowd_keys  = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
+    plan_keys   = {"行程規劃", "plan itinerary", "6", "行程規劃(itinerary planning)"}
+    rec_keys    = {"景點推薦", "attraction recommendation", "2", "景點推薦(attraction recommendation)"}
+    sust_keys   = {"永續觀光", "sustainable tourism", "2-1"}
+    gen_keys    = {"一般景點推薦", "general recommendation", "2-2"}
+    nearby_keys = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
+    rental_keys = {"租車", "car rental information", "5"}
+    keyword_map = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+    is_keyword  = (text in keyword_map) or (low in set(keyword_map.values()))
 
     if msgType == "text" and (
         low in crowd_keys
@@ -1255,7 +1259,7 @@ def handle_message_event(ev, uid, lang, replyTK):
         handle_free_command(uid, text, replyTK)
         return
 
-    # —— 2) 階段流程 ——
+    # —— 2) 階段流程 —— 
     stage = shared.user_stage.get(uid, 'ask_language')
     print(f"[Stage flow] type={msgType}, text={text}, stage={stage}")
 
@@ -1267,12 +1271,9 @@ def handle_message_event(ev, uid, lang, replyTK):
             safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", lang)), uid)
         return
 
-    # 第二步：再次處理語言
-    if stage == 'got_language' and msgType == "text":
-        handle_language(uid, text, replyTK)
-        return
+    # （移除原本的 got_language 分支，避免攔截年齡輸入）
 
-    # 第三步：輸入年齡
+    # 第二步：輸入年齡
     if stage == 'got_age' and msgType == "text":
         try:
             age = int(text)
@@ -1285,31 +1286,32 @@ def handle_message_event(ev, uid, lang, replyTK):
             safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)), uid)
         return
 
-    # 第四步：處理性別
+    # 第三步：處理性別
     if stage == 'got_gender' and msgType == "text":
         handle_gender(uid, text, replyTK)
         return
 
-    # 第五步：處理位置
+    # 第四步：處理位置
     if stage == 'got_location' and msgType == "location":
         handle_location(uid, msg, replyTK)
         return
 
-    # 第六步：處理天數
+    # 第五步：處理天數
     if stage == 'got_days' and msgType == "text":
         handle_days(uid, text, replyTK)
         return
 
-    # 第七步：ready 階段的自由指令
+    # 第六步：ready 階段的自由指令
     if stage == 'ready' and msgType == "text":
         handle_free_command(uid, text, replyTK)
         return
 
-    # 圖片、貼圖等其他訊息
+    # 圖片
     if msgType == "image":
         safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)), uid)
         return
 
+    # 貼圖
     if msgType == "sticker":
         safe_reply(
             replyTK,
@@ -1320,9 +1322,6 @@ def handle_message_event(ev, uid, lang, replyTK):
 
     # 其他不處理
     return
-
-
-    # 其餘忽略
 
 
 import threading
