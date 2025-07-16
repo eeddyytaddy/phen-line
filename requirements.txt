@@ -88,7 +88,7 @@ locust==2.29.0
 gevent==23.9.1
 gevent-websocket==0.10.1
 greenlet==3.0.0
-celery==5.0.0
+celery>=5.2.0
 # 用於在 Railway 上啟動 HTTP 服務提供檔案下載
 gunicorn==20.1.0
 Flask==3.1.0
