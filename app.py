@@ -936,17 +936,19 @@ def handle_days(uid, text, replyTK):
 
     safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)),uid)
 
-
 @measure_time
 def handle_free_command(uid, text, replyTK):
     """
-    Ready 階段的自由指令處理：包含「收集資料」「景點人潮」「行程規劃」
-    「景點推薦」「永續觀光」「附近搜尋」「關鍵字搜尋」「租車」等指令。
+    Ready 階段的自由指令處理：
+    包含「收集資料」「景點人潮」「行程規劃」
+    「景點推薦」「永續觀光」「附近搜尋」
+    「關鍵字搜尋」「租車」等指令。
     """
     from linebot.models import (
         TextSendMessage, TemplateSendMessage, ConfirmTemplate,
         QuickReply, QuickReplyButton, MessageAction, StickerSendMessage
     )
+    import threading
 
     low = text.lower()
     lang = _get_lang(uid)
@@ -954,96 +956,52 @@ def handle_free_command(uid, text, replyTK):
     # 使用者目前狀態
     preparing = shared.user_preparing.get(uid, False)
     plan_ready = shared.user_plan_ready.get(uid, False)
-    days = shared.user_trip_days.get(uid)
-    # 天數標籤：中/英文
+    days      = shared.user_trip_days.get(uid)  # e.g. "三天兩夜"
     days_label = to_en(days) if lang == 'en' else days
 
     # 指令集合
-    recollect_keys = {
-        "收集資料&修改資料", "收集資料&修改資料(data collection)",
-        "data collection", "collect data", "1"
-    }
-    crowd_keys = {
-        "景點人潮", "景點人潮(crowd analyzer)",
-        "crowd analyzer", "crowd analysis", "crowd info", "3"
-    }
-    plan_keys = {
-        "行程規劃", "行程規劃(itinerary planning)",
-        "itinerary planning", "plan itinerary", "6"
-    }
-    recommend_keys = {
-        "景點推薦", "景點推薦(attraction recommendation)",
-        "attraction recommendation", "recommend spot", "2"
-    }
-    sustainable_keys = {
-        "永續觀光", "永續觀光(sustainable tourism)",
-        "sustainable tourism", "2-1"
-    }
-    general_keys = {
-        "一般景點推薦", "一般景點推薦(general recommendation)",
-        "general recommendation", "2-2"
-    }
-    nearby_keys = {
-        "附近搜尋", "附近搜尋(nearby search)",
-        "nearby search", "4"
-    }
-    rental_keys = {
-        "租車", "租車(car rental information)",
-        "car rental information", "car rental", "5"
-    }
-    keyword_map = {
-        "餐廳": "restaurants",
-        "停車場": "parking",
-        "風景區": "scenic spots",
-        "住宿": "accommodation"
-    }
+    recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
+    crowd_keys       = {"景點人潮", "景點人潮(crowd analyzer)", "crowd analyzer", "crowd analysis", "crowd info", "3"}
+    plan_keys        = {"行程規劃", "行程規劃(itinerary planning)", "itinerary planning", "plan itinerary", "6"}
+    recommend_keys   = {"景點推薦", "景點推薦(attraction recommendation)", "attraction recommendation", "recommend spot", "2"}
+    sustainable_keys = {"永續觀光", "永續觀光(sustainable tourism)", "sustainable tourism", "2-1"}
+    general_keys     = {"一般景點推薦", "一般景點推薦(general recommendation)", "general recommendation", "2-2"}
+    nearby_keys      = {"附近搜尋", "附近搜尋(nearby search)", "nearby search", "4"}
+    rental_keys      = {"租車", "租車(car rental information)", "car rental information", "car rental", "5"}
+    keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+    is_keyword       = text in keyword_map or low in set(keyword_map.values())
 
-    # 1) 收集資料
+    # 1) 重新收集資料
     if low in recollect_keys:
-        prompt = _t("ask_language", "zh")
-        qr = QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="中文(Chinese)", text="中文")),
-            QuickReplyButton(action=MessageAction(label="英文(English)", text="English"))
-        ])
-        safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr),uid)
-        shared.user_stage[uid] = 'got_language'
+        handle_ask_language(uid, replyTK)
         return
 
     # 2) 景點人潮
     if low in crowd_keys:
-        send_crowd_analysis(replyTK,uid)
+        send_crowd_analysis(replyTK, uid)
         return
 
     # 3) 行程規劃
     if low in plan_keys:
+        # 背景正在進行中
         if preparing:
-            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", lang)),uid)
+            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", lang)), uid)
+
+        # 已有規劃結果
         elif plan_ready:
-            # 系統說明文字
+            safe_reply(replyTK, FlexMessage.ask_route_option(), uid)
+            # 推送詳細說明
             if lang == 'en':
-                desc1 = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
-            else:
-                desc1 = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
-            
-            sys_label = _t("system_route", lang)
-            if lang == 'en':
-                desc_sys = (
+                desc1    = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
+                sys_label = _t("system_route", lang)
+                desc_sys  = (
                     f"【{sys_label}】\n"
                     "1. Show full route (red line).\n"
                     "2. Show segment by segment (blue line).\n"
                     "3. Clear system route."
                 )
-            else:
-                desc_sys = (
-                    f"【{sys_label}】依照人潮較少規劃\n"
-                    "1. 整段顯示完整路線（紅線）。\n"
-                    "2. 分段逐段顯示（藍線）。\n"
-                    "3. 清除系統路線。"
-                )
-
-            usr_label = _t("user_route", lang)
-            if lang == 'en':
-                desc_usr = (
+                usr_label = _t("user_route", lang)
+                desc_usr  = (
                     f"【{usr_label}】\n"
                     "1. Tap \"Add to route\" to include in list.\n"
                     "2. Show all at once (green line).\n"
@@ -1051,40 +1009,61 @@ def handle_free_command(uid, text, replyTK):
                     "4. Clear user route."
                 )
             else:
-                desc_usr = (
+                desc1    = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
+                sys_label = _t("system_route", lang)
+                desc_sys  = (
+                    f"【{sys_label}】依照人潮較少規劃\n"
+                    "1. 整段顯示完整路線（紅線）。\n"
+                    "2. 分段逐段顯示（藍線）。\n"
+                    "3. 清除系統路線。"
+                )
+                usr_label = _t("user_route", lang)
+                desc_usr  = (
                     f"【{usr_label}】\n"
                     "1. 點「加入路線」加入清單。\n"
                     "2. 一次性顯示（綠線）。\n"
                     "3. 分段逐段顯示（橘線）。\n"
                     "4. 清除使用者路線。"
                 )
-            safe_reply(replyTK, FlexMessage.ask_route_option(),uid)
             safe_push(uid, [
                 TextSendMessage(text=desc1),
                 TextSendMessage(text=desc_sys),
                 TextSendMessage(text=desc_usr),
             ])
+
+        # 尚未有結果，但如果已選擇天數，重新啟動背景規劃
         else:
-            safe_reply(replyTK, TextSendMessage(text=_t("collect_info", lang)),uid)
+            if days:
+                shared.user_preparing[uid]  = True
+                shared.user_plan_ready[uid] = False
+                threading.Thread(
+                    target=_background_planning,
+                    args=(days, replyTK, uid),
+                    daemon=True
+                ).start()
+                safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)), uid)
+            else:
+                # 真正沒收集過資料時才提示
+                safe_reply(replyTK, TextSendMessage(text=_t("collect_info", lang)), uid)
         return
 
-    # 4) 景點推薦 (詢問是否永續)
+    # 4) 景點推薦 → 詢問永續 vs 一般
     if low in recommend_keys:
-        yes_lbl = _t("yes", lang)
-        no_lbl = _t("no", lang)
-        payload_yes = "永續觀光" if lang=='zh' else "sustainable tourism"
-        payload_no = "一般景點推薦" if lang=='zh' else "general recommendation"
+        yes_lbl    = _t("yes", lang)
+        no_lbl     = _t("no", lang)
+        payload_yes = "永續觀光" if lang == 'zh' else "sustainable tourism"
+        payload_no  = "一般景點推薦" if lang == 'zh' else "general recommendation"
         tpl = ConfirmTemplate(
             text=_t("ask_sustainable", lang),
             actions=[
                 MessageAction(label=yes_lbl, text=payload_yes),
-                MessageAction(label=no_lbl, text=payload_no)
+                MessageAction(label=no_lbl,  text=payload_no),
             ]
         )
-        safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", lang), template=tpl),uid)
+        safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", lang), template=tpl), uid)
         return
 
-    # 5) 永續或一般推薦
+    # 5) 永續 or 一般景點推薦
     if low in sustainable_keys:
         recommend_sustainable_places(replyTK, uid)
         return
@@ -1094,25 +1073,26 @@ def handle_free_command(uid, text, replyTK):
 
     # 6) 附近搜尋
     if low in nearby_keys:
-        safe_reply(replyTK, FlexMessage.ask_keyword(),uid)
+        safe_reply(replyTK, FlexMessage.ask_keyword(), uid)
         return
 
     # 7) 關鍵字搜尋
-    if text in keyword_map or low in set(keyword_map.values()):
+    if is_keyword:
         if low in set(keyword_map.values()):
-            zh = next(k for k,v in keyword_map.items() if v==low)
+            zh = next(k for k, v in keyword_map.items() if v == low)
             search_nearby_places(replyTK, uid, zh)
         else:
             search_nearby_places(replyTK, uid, text)
         return
 
-    # 8) 租車
+    # 8) 租車資訊
     if low in rental_keys:
         send_rental_car(replyTK, uid)
         return
 
-    # 9) 其他忽略
+    # 9) 其他不處理
     return
+
 
 
 
@@ -1242,7 +1222,7 @@ def handle_message_event(ev, uid, lang, replyTK):
     sust_keys   = {"永續觀光", "sustainable tourism", "2-1"}
     gen_keys    = {"一般景點推薦", "general recommendation", "2-2"}
     nearby_keys = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
-    rental_keys = {"租車", "car rental information", "5"}
+    rental_keys = {"租車", "car rental information", "5","租車(car rental information)"}
     keyword_map = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
     is_keyword  = (text in keyword_map) or (low in set(keyword_map.values()))
 
