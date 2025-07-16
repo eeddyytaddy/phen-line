@@ -1211,62 +1211,106 @@ def handle_postback_event(ev, uid, lang, stage, replyTK):
             safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)),uid)
         return
 
-def handle_message_event(ev, uid, lang, stage, replyTK):
-    """處理訊息事件"""
-    msg = ev["message"]
+import shared
+from linebot.models import TextSendMessage, StickerSendMessage
+
+def handle_message_event(ev, uid, lang, _stage, replyTK):
+    """
+    處理訊息事件──
+    1) 收到「收集資料」指令時，不管階段都重新觸發語系選擇
+    2) 依 shared.user_stage 讀取階段，嚴格控制 ask_language 階段只接受有效語系
+    3) 其餘階段照原本流程處理
+    """
+    import shared
+    from linebot.models import TextSendMessage, StickerSendMessage
+
+    # 取訊息型態與文字
+    msg     = ev["message"]
     msgType = msg.get("type")
-    text = (msg.get("text") or "").strip()
-    
+    text    = (msg.get("text") or "").strip()
+    # 以 shared.user_stage 讀當前階段
+    stage   = shared.user_stage.get(uid, 'ask_language')
     print(f"Message type: {msgType}, text: {text}, stage: {stage}")
 
-    # 根據階段處理訊息
-    if stage == 'ask_language' and msgType == "text":
+    # —— 0) 無視階段的「收集資料」重啟指令 —— 
+    recollect_keys = {
+        "收集資料&修改資料", "收集資料&修改資料(data collection)",
+        "data collection", "collect data", "1"
+    }
+    if msgType == "text" and text in recollect_keys:
+        # 重新 ask_language
         handle_ask_language(uid, replyTK)
         return
 
+    # —— 1) ask_language 階段：只接受 中文/zh/English/en —— 
+    if stage == 'ask_language' and msgType == "text":
+        low = text.lower()
+        if low in ("中文", "zh", "english", "en"):
+            handle_language(uid, text, replyTK)
+        else:
+            safe_reply(
+                replyTK,
+                TextSendMessage(text=_t("invalid_language", _get_lang(uid))),
+                uid
+            )
+        return
+
+    # —— 2) got_language 階段：使用者回的文字也當作語系處理一次 —— 
     if stage == 'got_language' and msgType == "text":
         handle_language(uid, text, replyTK)
         return
 
+    # —— 3) got_age 階段：處理年齡輸入 —— 
     if stage == 'got_age' and msgType == "text":
         try:
             age = int(text)
             if 0 <= age <= 120:
-                user_age[uid] = age
+                shared.user_age[uid] = age
                 handle_gender_buttons(uid, lang, replyTK)
             else:
-                safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)),uid)
+                safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)), uid)
         except ValueError:
-            safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)),uid)
+            safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)), uid)
         return
 
+    # —— 4) got_gender 階段：處理性別文字 —— 
     if stage == 'got_gender' and msgType == "text":
         handle_gender(uid, text, replyTK)
         return
 
+    # —— 5) got_location 階段：處理位置訊息 —— 
     if stage == 'got_location' and msgType == "location":
         handle_location(uid, msg, replyTK)
         return
 
+    # —— 6) got_days 階段：處理行程天數 —— 
     if stage == 'got_days' and msgType == "text":
         handle_days(uid, text, replyTK)
         return
 
+    # —— 7) ready 階段：自由指令 —— 
     if stage == 'ready' and msgType == "text":
         handle_free_command(uid, text, replyTK)
         return
 
-    # 處理其他訊息類型
+    # —— 8) 其他型態：圖片/貼圖 —— 
     if msgType == "image":
-        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)),uid)
+        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)), uid)
         return
-        
     if msgType == "sticker":
-        safe_reply(replyTK, StickerSendMessage(
-            package_id=msg["packageId"], 
-            sticker_id=msg["stickerId"]
-        ),uid)
+        safe_reply(
+            replyTK,
+            StickerSendMessage(
+                package_id=msg["packageId"],
+                sticker_id=msg["stickerId"]
+            ),
+            uid
+        )
         return
+
+    # —— 9) 其餘忽略 —— 
+    return
+
 
 # ========== Postback ========== #
 @handler.add(PostbackEvent)
