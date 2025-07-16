@@ -1198,7 +1198,7 @@ def handle_message_event(ev, uid, lang, replyTK):
     """
     處理文字／位置／圖片／貼圖事件：
       0) 重啟資料收集流程
-      1) 階段流程：ask_language → ask_age → ask_gender → ask_location → ask_days → ready
+      1) 階段流程：ask_language → got_age → got_gender → got_location → got_days → ready
       2) ready 階段的自由指令（行程規劃、景點人潮、推薦、搜尋、租車等）
     """
     from linebot.models import TextSendMessage, StickerSendMessage
@@ -1228,7 +1228,7 @@ def handle_message_event(ev, uid, lang, replyTK):
         return
 
     # 2) 輸入年齡
-    if stage == 'ask_age' and msg_type == "text":
+    if stage == 'got_age' and msg_type == "text":
         try:
             age = int(text)
             if 0 <= age <= 120:
@@ -1241,22 +1241,23 @@ def handle_message_event(ev, uid, lang, replyTK):
         return
 
     # 3) 選性別
-    if stage == 'ask_gender' and msg_type == "text":
+    if stage == 'got_gender' and msg_type == "text":
         handle_gender(uid, text, replyTK)
         return
 
     # 4) 傳位置
-    if stage == 'ask_location' and msg_type == "location":
+    if stage == 'got_location' and msg_type == "location":
         handle_location(uid, msg, replyTK)
         return
 
     # 5) 選天數
-    if stage == 'ask_days' and msg_type == "text":
+    if stage == 'got_days' and msg_type == "text":
         handle_days(uid, text, replyTK)
         return
 
     # —— ready 階段 —— 
     # 自由指令集合
+    recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
     crowd_keys       = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
     plan_keys        = {"行程規劃", "itinerary planning", "6", "行程規劃(itinerary planning)"}
     recommend_keys   = {"景點推薦", "attraction recommendation", "2", "景點推薦(attraction recommendation)"}
@@ -1268,27 +1269,30 @@ def handle_message_event(ev, uid, lang, replyTK):
     is_keyword       = text in keyword_map or low in set(keyword_map.values())
 
     if stage == 'ready' and msg_type == "text":
-        # 收集資料
-        if low in {"收集資料", "data collection", "collect data", "1"}:
+        # 1) 重新收集資料
+        if low in recollect_keys:
             handle_ask_language(uid, replyTK)
-        # 景點人潮
+
+        # 2) 景點人潮
         elif low in crowd_keys:
             send_crowd_analysis(replyTK, uid)
-        # 行程規劃
+
+        # 3) 行程規劃
         elif low in plan_keys:
             handle_free_command(uid, text, replyTK)
-        # 景點推薦
-        elif low in recommend_keys:
+
+        # 4) 景點推薦（含永續／一般）
+        elif low in recommend_keys or low in sustainable_keys or low in general_keys:
             handle_free_command(uid, text, replyTK)
-        # 永續 or 一般推薦
-        elif low in sustainable_keys or low in general_keys:
-            handle_free_command(uid, text, replyTK)
-        # 附近搜尋 or 關鍵字搜尋
+
+        # 5) 附近搜尋 or 關鍵字搜尋
         elif low in nearby_keys or is_keyword:
             handle_free_command(uid, text, replyTK)
-        # 租車
+
+        # 6) 租車
         elif low in rental_keys:
             handle_free_command(uid, text, replyTK)
+
         return
 
     # 收到圖片
@@ -1307,6 +1311,7 @@ def handle_message_event(ev, uid, lang, replyTK):
 
     # 其他不處理
     return
+
 
 
 
