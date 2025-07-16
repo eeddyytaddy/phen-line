@@ -151,11 +151,11 @@ used_reply_tokens = set()
 def safe_reply(token, msgs, uid=None):
     """
     安全的 reply 函式，避免重複使用 reply token。
-    若 reply_message 回傳 Invalid reply token，且有傳入 uid，則改以 safe_push 送出。
-    其他例外皆只記錄，不再二次嘗試 line_bot_api.push_message。
+    若 reply_message 發生任何 LineBotApiError，且有傳入 uid，
+    就改用 safe_push 送出；其他例外皆只記錄，不再二次嘗試。
     """
     if not token:
-        print("Warning: Reply token is None or empty")
+        print("Warning: reply token is None or empty")
         return
 
     # 避免同一個 token 重複用
@@ -171,23 +171,28 @@ def safe_reply(token, msgs, uid=None):
         # 嘗試 reply
         line_bot_api.reply_message(token, msgs)
         used_reply_tokens.add(token)
-        print(f"Reply sent successfully with token: {token}")
+        print(f"✅ Reply sent successfully with token: {token}")
     except LineBotApiError as e:
         # 取得錯誤細節
         status_code = getattr(e, "status_code", None)
         request_id  = getattr(e, "request_id",  None)
         error_message = e.error.message if hasattr(e, "error") and e.error else str(e)
-        print(f"safe_reply error: status_code={status_code}, request_id={request_id}, message={error_message}")
+        print(f"❌ safe_reply error: status_code={status_code}, request_id={request_id}, message={error_message}")
+
         # 標記 token 已使用，避免重複
         used_reply_tokens.add(token)
 
-        # 只有在「Invalid reply token」時，才改用 push
-        if uid and "Invalid reply token" in error_message:
-            print(f"Reply token {token} 無效或過期，改用 safe_push({uid})")
-            safe_push(uid, msgs)
+        # 無論何種 LineBotApiError，都以 push 做備援（前提須有 uid）
+        if uid:
+            print(f"↪️ safe_reply fallback to push for user {uid}")
+            try:
+                safe_push(uid, msgs)
+            except Exception as e2:
+                print(f"   ⚠️ safe_push fallback failed: {e2}")
     except Exception as e:
         # 其它非 LineBotApiError
         print(f"safe_reply unexpected error: {e}")
+
 
 
 from linebot.exceptions import LineBotApiError
