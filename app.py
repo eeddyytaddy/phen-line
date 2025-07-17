@@ -1204,7 +1204,7 @@ def handle_message_event(ev, uid, lang, replyTK):
     1) 自由指令
     2) 階段流程：語言→年齡→性別→位置→天數→ready
     """
-    # 使用者事件處理鎖定，確保同一使用者事件順序執行，避免狀態不同步
+    # 使用者事件處理鎖定，確保同一使用者事件順序執行
     if uid not in user_event_lock:
         user_event_lock[uid] = threading.Lock()
     with user_event_lock[uid]:
@@ -1214,82 +1214,70 @@ def handle_message_event(ev, uid, lang, replyTK):
         low = text.lower()
 
         # —— 0) 重啟資料收集流程 ——
-        # 只要使用者輸入以「收集資料」開頭，就觸發語言選擇
         if msgType == "text" and text.startswith("收集資料"):
             handle_ask_language(uid, replyTK)
             return
 
         # —— 1) 自由指令 ——
-        crowd_keys  = {"景點人潮", "crowd analyzer", "3","景點人潮(crowd analyzer)"}
-        plan_keys   = {"行程規劃", "plan itinerary", "6","行程規劃(itinerary planning)"}
-        rec_keys    = {"景點推薦", "attraction recommendation", "2","景點推薦(attraction recommendation)"}
+        crowd_keys  = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
+        plan_keys   = {"行程規劃", "plan itinerary", "6", "行程規劃(itinerary planning)"}
+        rec_keys    = {"景點推薦", "attraction recommendation", "2", "景點推薦(attraction recommendation)"}
         sust_keys   = {"永續觀光", "sustainable tourism", "2-1"}
         gen_keys    = {"一般景點推薦", "general recommendation", "2-2"}
-        nearby_keys = {"附近搜尋", "nearby search", "4","附近搜尋(nearby search)"}
-        rental_keys = {"租車", "car rental information", "5","租車(car rental information)"}
+        nearby_keys = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
+        rental_keys = {"租車", "car rental information", "5", "租車(car rental information)"}
         keyword_map = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
         is_keyword  = text in keyword_map or low in set(keyword_map.values())
 
         if msgType == "text":
-            # 針對「行程規劃」指令在資料未完整時進行缺失資料提示
+            # Special handling for itinerary planning to prompt missing info
             if low in plan_keys:
-                # 檢查使用者資料欄位缺少哪一項
                 missing_field = None
-                if shared.user_age[uid] is None:
+                if shared.user_age.get(uid) is None:
                     missing_field = 'age'
-                elif shared.user_gender[uid] is None:
+                elif shared.user_gender.get(uid) is None:
                     missing_field = 'gender'
-                elif uid not in shared.user_location or shared.user_location.get(uid) is None:
+                elif shared.user_location.get(uid) is None:
                     missing_field = 'location'
-                elif shared.user_trip_days[uid] is None:
+                elif shared.user_trip_days.get(uid) is None:
                     missing_field = 'days'
+
                 if missing_field:
-                    # 根據缺少的欄位給出相應提示，並設定流程階段
+                    # Prompt the user for the missing information
+                    current_lang = _get_lang(uid)
                     if missing_field == 'age':
                         shared.user_stage[uid] = 'got_age'
-                        safe_reply(replyTK, TextSendMessage(text=_t("ask_age", _get_lang(uid))), uid)
+                        safe_reply(replyTK, TextSendMessage(text=_t("ask_age", current_lang)), uid)
                     elif missing_field == 'gender':
                         shared.user_stage[uid] = 'got_gender'
-                        # 顯示性別選擇按鈕（中英文依據使用者語言）
-                        handle_gender_buttons(uid, _get_lang(uid), replyTK)
+                        handle_gender_buttons(uid, current_lang, replyTK)
                     elif missing_field == 'location':
                         shared.user_stage[uid] = 'got_location'
                         safe_reply(replyTK, FlexMessage.ask_location(), uid)
                     elif missing_field == 'days':
                         shared.user_stage[uid] = 'got_days'
-                        # 準備行程天數選項 QuickReply 列表
-                        current_lang = _get_lang(uid)
+                        # Prepare quick-reply options for trip duration
                         days_options = ["兩天一夜", "三天兩夜", "四天三夜", "五天四夜"]
                         qr_items = [
                             QuickReplyButton(
                                 action=MessageAction(
                                     label=to_en(d) if current_lang == 'en' else d,
-                                    text= to_en(d) if current_lang == 'en' else d
+                                    text = to_en(d) if current_lang == 'en' else d
                                 )
                             )
                             for d in days_options
                         ]
-                        # 提示選擇天數
-                        safe_reply(
-                            replyTK,
-                            TextSendMessage(text=_t("ask_days", current_lang), quick_reply=QuickReply(items=qr_items)),
-                            uid
-                        )
-                    return  # 已提示缺少資料，等待使用者回覆，結束處理
-                # 資料齊全則交由 handle_free_command 處理（例如行程已經生成的情況）
+                        safe_reply(replyTK, TextSendMessage(text=_t("ask_days", current_lang),
+                                                            quick_reply=QuickReply(items=qr_items)), uid)
+                    return
+
+                # All data collected, proceed to itinerary planning
                 handle_free_command(uid, text, replyTK)
                 return
 
-            # 其他自由指令類型
-            if (
-                low in crowd_keys
-                or low in rec_keys
-                or low in sust_keys
-                or low in gen_keys
-                or low in nearby_keys
-                or low in rental_keys
-                or is_keyword
-            ):
+            # Other free commands and keyword-based searches
+            if (low in crowd_keys or low in rec_keys or low in sust_keys or 
+                low in gen_keys or low in nearby_keys or low in rental_keys or is_keyword):
                 handle_free_command(uid, text, replyTK)
                 return
 
@@ -1305,18 +1293,14 @@ def handle_message_event(ev, uid, lang, replyTK):
                 safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", _get_lang(uid))), uid)
             return
 
-        # 第二步：再次處理語言（處理「中文/English」以外的輸入）
-        if stage == 'got_language' and msgType == "text":
-            handle_language(uid, text, replyTK)
-            return
+        # **(Removed 'got_language' check – no longer needed)**
 
-        # 第三步：輸入年齡
+        # 第二步：輸入年齡
         if stage == 'got_age' and msgType == "text":
             try:
                 age = int(text)
                 if 0 <= age <= 120:
                     shared.user_age[uid] = age
-                    # 年齡輸入正確，進入性別選擇階段
                     handle_gender_buttons(uid, _get_lang(uid), replyTK)
                 else:
                     safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", _get_lang(uid))), uid)
@@ -1324,38 +1308,40 @@ def handle_message_event(ev, uid, lang, replyTK):
                 safe_reply(replyTK, TextSendMessage(text=_t("enter_number", _get_lang(uid))), uid)
             return
 
-        # 第四步：處理性別
+        # 第三步：處理性別
         if stage == 'got_gender' and msgType == "text":
             handle_gender(uid, text, replyTK)
             return
 
-        # 第五步：處理位置（需要 message.type == "location" 的訊息）
+        # 第四步：處理位置（Location message）
         if stage == 'got_location' and msgType == "location":
             handle_location(uid, msg, replyTK)
             return
 
-        # 第六步：處理天數
+        # 第五步：處理天數
         if stage == 'got_days' and msgType == "text":
             handle_days(uid, text, replyTK)
             return
 
-        # 第七步：所有必要資料填完，階段為 ready，處理自由指令
+        # 第六步：Ready 階段的自由指令
         if stage == 'ready' and msgType == "text":
             handle_free_command(uid, text, replyTK)
             return
 
-        # 圖片訊息：提示資料取得失敗（不在此處理圖片上傳）
+        # 處理圖片訊息
         if msgType == "image":
             safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", _get_lang(uid))), uid)
             return
 
-        # 貼圖訊息：原樣回傳貼圖
+        # 處理貼圖訊息
         if msgType == "sticker":
-            safe_reply(replyTK, StickerSendMessage(package_id=msg.get("packageId"), sticker_id=msg.get("stickerId")), uid)
+            safe_reply(replyTK, StickerSendMessage(package_id=msg.get("packageId"),
+                                                   sticker_id=msg.get("stickerId")), uid)
             return
 
-        # 其他類型訊息不處理
+        # 其他類型的訊息不處理
         return
+
 
 
 
