@@ -1,122 +1,122 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Locust script  – run-once, safe CSV, keep-alive
-───────────────────────────────────────────────
-環境變數（可選）  
-  RUN_TIME_SEC   壓測秒數，預設 600 (=10 min)  
-  SLEEP_ON_END   壓測完/略過後保活秒數，預設 300；0 表立即退出  
+locustfile.py ―― 先完成 5 步資料收集，之後隨機呼叫其他指令
+────────────────────────────────────────────
+環境變數（可選）：
+  TARGET_HOST           目標主機，預設 http://localhost:10000
+  LINE_CHANNEL_SECRET   LINE 簽章金鑰；不需要可留空
+  PAYLOAD_DIR           JSON 樣本目錄，預設 ./payloads
+  RUN_TIME_SEC          壓測秒數，預設 600 (=10 分鐘)
+  SLEEP_ON_END          測完後保活秒數，預設 300；0 → 立即退出
+  FUNC_RT_CSV           CSV 路徑（如需自訂）
 """
 
-# ── 0. 內部補丁 ───────────────────────────────────────────────
-import os, csv, sys
+import os, json, random, time, uuid, hmac, hashlib
 from pathlib import Path
 from gevent import spawn_later, sleep as gsleep
-from locust import stats as _stats, events
+from locust import HttpUser, TaskSet, task, between, events, stats as _stats
+import csv, sys
 
-# 分號 CSV writer
+# ──────────────────────────────────────────
+# 0. 分號 CSV patch
+# ──────────────────────────────────────────
 class _PatchedWriter(_stats.StatsCSVFileWriter):
-    def __init__(self, env, base):
-        super().__init__(env, base)
-        self.stats_history_file.seek(0); self.stats_history_file.truncate(0)
-        self.stats_history_csv_writer = csv.writer(
-            self.stats_history_file, delimiter=";",
-            quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
-        )
-        self.stats_history_csv_writer.writerow(self.STATS_HISTORY_CSV_HEADERS)
-        self.stats_history_file.flush()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        file_attr   = "stats_history_file"    if hasattr(self, "stats_history_file")    else "_stats_history_file"
+        writer_attr = "stats_history_csv_writer" if hasattr(self, "stats_history_csv_writer") else "_stats_history_csv_writer"
+        stats_file = getattr(self, file_attr, None)
+        if not stats_file:
+            return
+        stats_file.seek(0); stats_file.truncate(0)
+        csv_writer = csv.writer(stats_file, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+        setattr(self, writer_attr, csv_writer)
+        hdr = getattr(self, "STATS_HISTORY_CSV_HEADERS", None)
+        if hdr:
+            csv_writer.writerow(hdr)
+        stats_file.flush()
 _stats.StatsCSVFileWriter = _PatchedWriter
 
-# ── 1. 參數與一次鎖 ──────────────────────────────────────────
+# ──────────────────────────────────────────
+# 1. run-once & keep-alive
+# ──────────────────────────────────────────
 RUN_TIME_SEC = int(os.getenv("RUN_TIME_SEC", "600"))
 SLEEP_KEEP   = int(os.getenv("SLEEP_ON_END", "300"))
-SENTINEL     = Path("/data/.done")        # 是否已跑過的鎖檔
-
-@events.init.add_listener
-def _setup(env, **_):
-    # 打開 response-times cache，根治 ValueError
-    env.stats.use_response_times_cache = True
-
-    # 如果鎖檔已存在 ⇒ 立即結束 test_run，進入保活
-    if SENTINEL.exists():
-        print("[run-once] 偵測到 /data/.done，跳過壓測。")
-        spawn_later(1, lambda: env.runner and env.runner.quit())
+SENTINEL     = Path("/data/.done")
 
 @events.test_start.add_listener
-def _auto_stop(env, **_):
-    if not SENTINEL.exists():                     # 第一次才需要排程自動停止
+def on_test_start(env, **kw):
+    env.stats.use_response_times_cache = True
+    if SENTINEL.exists():
+        spawn_later(1, lambda: env.runner and env.runner.quit())
+    else:
         spawn_later(RUN_TIME_SEC, lambda: env.runner and env.runner.quit())
 
 @events.test_stop.add_listener
-def _on_stop(env, **_):
-    # 第一次跑完 → 建鎖檔
+def on_test_stop(env, **kw):
     if not SENTINEL.exists():
         SENTINEL.touch()
-        print("[run-once] 壓測完成，已建立 /data/.done")
-    # 無論第一次或跳過，都依 SLEEP_KEEP 保活
     if SLEEP_KEEP > 0:
-        print(f"[keep-alive] 容器將於 {SLEEP_KEEP}s 後退出")
         gsleep(SLEEP_KEEP)
 
-# ── 2. 壓測邏輯（與之前相同） ────────────────────────────────
-import hashlib, hmac, json, random, time, uuid
-from locust import HttpUser, between, task
-
-HOST           = os.getenv("TARGET_HOST", "http://localhost:10000")
+# ──────────────────────────────────────────
+# 2. 壓測邏輯：先 5 步收集 → 其餘隨機
+# ──────────────────────────────────────────
+TARGET_HOST    = os.getenv("TARGET_HOST", "http://localhost:10000")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
-PAYLOAD_DIR    = Path(__file__).parent / "payloads"
+PAYLOAD_DIR    = Path(os.getenv("PAYLOAD_DIR", Path(__file__).parent / "payloads"))
 
-STEP_WEIGHTS = {
-    "lang_zh": 1, "age_25": 1, "gender_male": 1, "location": 1,
-    "text_2days": 1, "text_3days": 1, "text_4days": 1, "text_5days": 1,
-    "text_crowd": 1, "text_recommend": 1, "text_sustain": 1, "text_rental": 1,
-    "text_restaurants": 1, "text_parking": 1, "text_scenic_spots": 1,
-    "text_accommodation": 1,
-}
+# 快取所有 payload JSON
+_PAYLOAD = {p.stem: json.loads(p.read_text("utf-8-sig")) for p in PAYLOAD_DIR.glob("*.json")}
 
-def _sign(b: bytes) -> str:
-    return hmac.new(CHANNEL_SECRET.encode(), b, hashlib.sha256).hexdigest()
+# 定義步驟
+COLLECT_STEPS = ["lang_zh","age_25","gender_male","location"]
+DAY_STEPS     = ["text_2days","text_3days","text_4days","text_5days"]
+# 後續隨機池 = 所有 payload 扣除收集步驟
+ALL = set(_PAYLOAD.keys())
+POST_COLLECT = list(ALL - set(COLLECT_STEPS) - set(DAY_STEPS))
 
-class LineBotUser(HttpUser):
-    host = HOST
-    wait_time = between(0.3, 1.0)
-    _cache = {p.stem: json.loads(p.read_text("utf-8-sig"))
-              for p in PAYLOAD_DIR.glob("*.json")}
+def _sign(body: bytes) -> str:
+    return hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256).hexdigest()
 
+class UserBehavior(TaskSet):
     def on_start(self):
-        self.uid = str(uuid.uuid4())
-        self.hdr = {"Content-Type": "application/json"}
+        # 初始化收集流程
+        self.collected   = False
+        self.uid         = str(uuid.uuid4())
+        self.hdr         = {"Content-Type": "application/json"}
+        self.steps       = COLLECT_STEPS + [random.choice(DAY_STEPS)]
+        self.collect_idx = 0
 
-    def _post(self, name):
-        payload = json.loads(json.dumps(self._cache[name]))
+    @task
+    def step_or_random(self):
+        if not self.collected:
+            name = self.steps[self.collect_idx]
+            self._do(name)
+            self.collect_idx += 1
+            if self.collect_idx >= len(self.steps):
+                self.collected = True
+        else:
+            name = random.choice(POST_COLLECT)
+            self._do(name)
+
+    def _do(self, name):
+        # 準備 body
+        payload = json.loads(json.dumps(_PAYLOAD[name]))
         ev = payload["events"][0]
-        ev.update(replyToken=str(uuid.uuid4()),
-                  timestamp=int(time.time()*1000),
-                  source={"userId": self.uid, "type": "user"})
+        ev.update(
+            replyToken=str(uuid.uuid4()),
+            timestamp =int(time.time()*1000),
+            source    ={"userId":self.uid,"type":"user"}
+        )
         body = json.dumps(payload).encode()
         if CHANNEL_SECRET:
             self.hdr["X-Line-Signature"] = _sign(body)
+        # 發送
         self.client.post("/", data=body, headers=self.hdr, name=f"POST / {name}")
 
-    @task
-    def send(self):
-        name = random.choices(list(STEP_WEIGHTS), weights=STEP_WEIGHTS.values())[0]
-        try:
-            self._post(name)
-        except Exception as exc:
-            self.environment.events.request.fire(
-                request_type="PAYLOAD", name=f"{name}.json",
-                response_time=0, response_length=0, exception=exc
-            )
-
-# ── 3. (可選) 自訂統計存檔 ───────────────────────────────────
-try:
-    from locust_db import save_stats
-    @events.test_stop.add_listener
-    def _save(env, **_):
-        try:
-            save_stats(env)
-        except Exception as e:
-            print(f"[locustfile] save_stats failed: {e}")
-except ImportError:
-    pass
+class LineBotUser(HttpUser):
+    host      = TARGET_HOST
+    wait_time = between(0.2, 1)
+    tasks     = [UserBehavior]
