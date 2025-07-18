@@ -99,7 +99,7 @@ def csv_up():
         print("無法取得 Worker 回傳結果。")
 
 
-@measure_time
+
 def save_to_sqlite(records, db_path='local.db'):
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
