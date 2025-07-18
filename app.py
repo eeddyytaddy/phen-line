@@ -292,7 +292,7 @@ import requests
 from datetime import datetime as dt
 from timer import measure_time
 
-@measure_time
+
 def get_current_popularity(place_id):
     """
     以 Google Maps Python 客戶端 + Place Details API 取今日即時熱度 (0–100)。
@@ -372,7 +372,7 @@ def get_current_popularity(place_id):
     return 0
 
 
-@measure_time
+
 def update_plan_csv_with_populartimes(plan_csv_file, user_id, crowd_source="historical"):
     """
     在行程 CSV 加入 place_id、crowd（歷史或即時）、distance_km，
@@ -455,7 +455,7 @@ def update_plan_csv_with_populartimes(plan_csv_file, user_id, crowd_source="hist
 
 # ---------- app.py  ※ Part 2 / 4  ----------------------------------
 # ---- 1) XGBoost 排序 (Machine Learning) ----
-@measure_time
+
 def run_ml_sort(option, reply_token, user_id, df_plan):
     """
     以 XGBoost 依性別、年齡做排序，回傳 userID list
@@ -474,7 +474,7 @@ def run_ml_sort(option, reply_token, user_id, df_plan):
 
 
 # ---- 2) 景點過濾 (Attraction Filtering) ----
-@measure_time
+
 def run_filter(option, reply_token, user_id, csv_path, userID):
     """
     根據需求過濾景點（例如距離、人潮…）
@@ -483,7 +483,7 @@ def run_filter(option, reply_token, user_id, csv_path, userID):
 
 
 # ---- 3) 景點重排名 (Attraction Ranking) ----
-@measure_time
+
 def run_ranking(option, reply_token, user_id, plan_csv):
     """
     根據即時人潮和距離再對行程排序，並寫回 CSV
@@ -492,7 +492,7 @@ def run_ranking(option, reply_token, user_id, plan_csv):
 
 
 # ---- 4) 上傳資料 (Data to Database) ----
-@measure_time
+
 def run_upload(option, reply_token, user_id):
     """
     把最終 CSV 上傳到遠端 PHP 或其他服務
@@ -584,7 +584,7 @@ def process_travel_planning(option, reply_token, user_id):
 
 
 
-@measure_time
+
 def people_high5(tk, uid):
     """回傳目前時段最壅擠前 5 名 (list, text)"""
     try:
@@ -618,7 +618,7 @@ def send_questionnaire(tk,uid):
         template=btn
     ),uid)
 
-@measure_time
+
 def send_crowd_analysis(tk,uid):
     safe_reply(tk, [
         TextSendMessage("https://how-many-people.eeddyytaddy.workers.dev")
@@ -819,7 +819,7 @@ def send_rental_car(reply_token, uid):
     ],uid)
 
 
-@measure_time
+
 def handle_ask_language(uid, replyTK):
     """第一步：請使用者選擇語言"""
     prompt = _t("ask_language", "zh")
@@ -846,7 +846,7 @@ def handle_language(uid, text, replyTK):
     safe_reply(replyTK, TextSendMessage(text=_t("ask_age", _get_lang(uid))),uid)
 
 
-@measure_time
+
 def handle_gender_buttons(uid, lang, replyTK):
     """第三步（年齡後）：顯示性別選擇按鈕"""
     GENDER_LABEL = {"男": "Male", "女": "Female", "其他": "Other"}
@@ -936,7 +936,7 @@ def handle_days(uid, text, replyTK):
 
     safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)),uid)
 
-@measure_time
+
 def handle_free_command(uid, text, replyTK):
     """
     Ready 階段的自由指令處理：
@@ -1363,6 +1363,6 @@ cleanup_thread.start()
 if __name__ == "__main__":
     print("🚀 Flask server start …")
     os.environ.setdefault('APP_ENV', 'loadtest')
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",8000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)), debug=True)
 
 # ---------------- END OF app.py ------------------------------------
