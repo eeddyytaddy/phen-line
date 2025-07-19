@@ -845,6 +845,37 @@ def handle_language(uid, text, replyTK):
     shared.user_stage[uid] = 'got_age'
     safe_reply(replyTK, TextSendMessage(text=_t("ask_age", _get_lang(uid))),uid)
 
+# 在 app.py 中新增，放在 handle_language、handle_gender_buttons 之後，handle_message_event 之前
+@measure_time
+def handle_age(uid, text, replyTK):
+    """
+    處理使用者輸入的年齡 (stage='got_age')：
+    1) 驗證整數範圍 0–120
+    2) 存到 shared.user_age
+    3) 呼叫 handle_gender_buttons 進入下一步
+    4) 錯誤時回覆對應錯誤訊息
+    """
+    from linebot.models import TextSendMessage
+
+    lang = _get_lang(uid)
+    try:
+        age = int(text)
+        if 0 <= age <= 120:
+            shared.user_age[uid] = age
+            # 進入「選擇性別」階段
+            handle_gender_buttons(uid, lang, replyTK)
+        else:
+            safe_reply(
+                replyTK,
+                TextSendMessage(text=_t("enter_valid_age", lang)),
+                uid
+            )
+    except ValueError:
+        safe_reply(
+            replyTK,
+            TextSendMessage(text=_t("enter_number", lang)),
+            uid
+        )
 
 
 def handle_gender_buttons(uid, lang, replyTK):
@@ -1297,17 +1328,8 @@ def handle_message_event(ev, uid, lang, replyTK):
 
         # 第二步：輸入年齡
         if stage == 'got_age' and msgType == "text":
-            try:
-                age = int(text)
-                if 0 <= age <= 120:
-                    shared.user_age[uid] = age
-                    handle_gender_buttons(uid, _get_lang(uid), replyTK)
-                else:
-                    safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", _get_lang(uid))), uid)
-            except ValueError:
-                safe_reply(replyTK, TextSendMessage(text=_t("enter_number", _get_lang(uid))), uid)
+            handle_age(uid, text, replyTK)
             return
-
         # 第三步：處理性別
         if stage == 'got_gender' and msgType == "text":
             handle_gender(uid, text, replyTK)
