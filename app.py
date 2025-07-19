@@ -618,7 +618,7 @@ def send_questionnaire(tk,uid):
         template=btn
     ),uid)
 
-
+@measure_time
 def send_crowd_analysis(tk,uid):
     safe_reply(tk, [
         TextSendMessage("https://how-many-people.eeddyytaddy.workers.dev")
