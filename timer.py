@@ -5,7 +5,7 @@
 ========================================================
 ✅ duration_ms        ：壁鐘時間 (ms)
 ✅ cpu_seconds        ：此呼叫實際燒掉的 CPU‑seconds (user+sys)
-✅ cpu_percent        ：cpu_seconds ➜ 轉換成平均 CPU 使用率 (%)
+✅ cpu_percent        ：以單核為基準的平均 CPU 使用率 (%)
 ✅ rss_delta_mb       ：RSS 前後差 (MB)
 ✅ rss_peak_mb        ：此期間的 RSS 峰值 (MB)
 ✅ mem_percent        ：系統整體記憶體使用率 (%)  *保留舊欄位供 Dashboard*
@@ -170,7 +170,7 @@ def measure_time(fn):
             meter.begin()
 
         try:
-            return fn(*args, **kwargs)  # ★ 執行原本邏輯 ★
+            return fn(*args, **kwargs)
         finally:
             # 5‑5) 結束 → 蒐集指標
             wall_time = time.perf_counter() - t0
@@ -179,20 +179,19 @@ def measure_time(fn):
             cpu1_times = PROC.cpu_times()
             cpu1 = cpu1_times.user + cpu1_times.system
             cpu_seconds = max(0.0, cpu1 - cpu0)
-            cpu_percent = (
-                min(100.0, cpu_seconds / (wall_time * CPU_COUNT) * 100.0) if wall_time > 0 else 0.0
-            )
+            # 改為以單核為基準計算平均 CPU%（不再除以 CPU_COUNT）
+            cpu_percent = min(100.0, cpu_seconds / wall_time * 100.0) if wall_time > 0 else 0.0
 
             rss1 = PROC.memory_info().rss
             rss_delta_mb = (rss1 - rss0) / 1024 ** 2
-            rss_peak_mb = max(peak_rss, rss1) / 1024 ** 2  # 單次呼叫只取結束值作峰值
+            rss_peak_mb = max(peak_rss, rss1) / 1024 ** 2
 
-            mem_percent = psutil.virtual_memory().percent  # 保留舊欄位
+            mem_percent = psutil.virtual_memory().percent
 
             energy_joule: float | None = None
             if USE_PYRAPL:
                 meter.end()  # type: ignore
-                energy_joule = (meter.result.pkg + meter.result.dram) / 1e6  # µJ → J
+                energy_joule = (meter.result.pkg + meter.result.dram) / 1e6
 
             ts = int(time.time() * 1000)
 
@@ -222,28 +221,26 @@ def measure_time(fn):
                         ),
                     )
                     con.commit()
-            except Exception as exc:  # pragma: no cover
+            except Exception as exc:
                 print(f"[measure_time] DB insert failed → {exc}")
 
-            # 5‑7) 寫入 CSV（thread‑safe）
+            # 5‑7) 寫入 CSV
             try:
                 with _CSV_LOCK:
                     with CSV_PATH.open("a", newline="", encoding="utf-8-sig") as f:
-                        csv.writer(f).writerow(
-                            [
-                                ts,
-                                fn_name,
-                                duration_ms,
-                                cpu_seconds,
-                                cpu_percent,
-                                rss_delta_mb,
-                                rss_peak_mb,
-                                mem_percent,
-                                energy_joule,
-                                concurr,
-                            ]
-                        )
-            except Exception as exc:  # pragma: no cover
+                        csv.writer(f).writerow([
+                            ts,
+                            fn_name,
+                            duration_ms,
+                            cpu_seconds,
+                            cpu_percent,
+                            rss_delta_mb,
+                            rss_peak_mb,
+                            mem_percent,
+                            energy_joule,
+                            concurr,
+                        ])
+            except Exception as exc:
                 print(f"[measure_time] CSV write failed → {exc}")
 
             # 5‑8) 併發 -1
