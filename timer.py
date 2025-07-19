@@ -4,7 +4,7 @@
 改版 timer.py —— 精準量測「單次呼叫」的 CPU 與記憶體
 ========================================================
 ✅ duration_ms        ：壁鐘時間 (ms)
-✅ cpu_seconds        ：此呼叫實際燒掉的 CPU‑seconds (user+sys)
+✅ cpu_seconds        ：此呼叫實際燒掉的 CPU-seconds (user+sys)
 ✅ cpu_percent        ：以單核為基準的平均 CPU 使用率 (%)
 ✅ rss_delta_mb       ：RSS 前後差 (MB)
 ✅ rss_peak_mb        ：此期間的 RSS 峰值 (MB)
@@ -160,8 +160,8 @@ def measure_time(fn):
 
         # 5‑4) 進入前 —— 紀錄 baseline
         t0 = time.perf_counter()
-        cpu0_times = PROC.cpu_times()
-        cpu0 = cpu0_times.user + cpu0_times.system
+        # 使用 time.process_time() 取代 psutil.cpu_times，提高解析度
+        cpu0 = time.process_time()
         rss0 = PROC.memory_info().rss
         peak_rss = rss0
 
@@ -176,10 +176,9 @@ def measure_time(fn):
             wall_time = time.perf_counter() - t0
             duration_ms = round(wall_time * 1000, 2)
 
-            cpu1_times = PROC.cpu_times()
-            cpu1 = cpu1_times.user + cpu1_times.system
+            # 使用 time.process_time() 計算實際 CPU 佔用
+            cpu1 = time.process_time()
             cpu_seconds = max(0.0, cpu1 - cpu0)
-            # 改為以單核為基準計算平均 CPU%（不再除以 CPU_COUNT）
             cpu_percent = min(100.0, cpu_seconds / wall_time * 100.0) if wall_time > 0 else 0.0
 
             rss1 = PROC.memory_info().rss
@@ -221,7 +220,7 @@ def measure_time(fn):
                         ),
                     )
                     con.commit()
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 print(f"[measure_time] DB insert failed → {exc}")
 
             # 5‑7) 寫入 CSV
@@ -240,7 +239,7 @@ def measure_time(fn):
                             energy_joule,
                             concurr,
                         ])
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 print(f"[measure_time] CSV write failed → {exc}")
 
             # 5‑8) 併發 -1
