@@ -54,7 +54,6 @@ RUN python init_db.py || true
 ENV APP_ENV=docker \
     PORT=10000 \
     PYTHONUNBUFFERED=1 \
-    TEST_MODE=1 
 
 # ------------------------------------------------------------
 # 9. Expose application port
