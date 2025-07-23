@@ -1,4 +1,4 @@
-# ------------------------------------------------------------
+------------------------------------------------------------
 # 1. Base image
 # ------------------------------------------------------------
 FROM python:3.11.9-slim
@@ -53,7 +53,8 @@ RUN python init_db.py || true
 # ------------------------------------------------------------
 ENV APP_ENV=docker \
     PORT=10000 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TEST_MODE=1
 
 # ------------------------------------------------------------
 # 9. Expose application port
@@ -61,8 +62,6 @@ ENV APP_ENV=docker \
 EXPOSE 10000
 
 # ------------------------------------------------------------
-# 10. Default command (overridden by Railway services)
-#     - phen-line service uses gunicorn
-#     - locust-loadtest service uses locust
+# 10. Default command: Gunicorn + Gevent with TEST_MODE
 # ------------------------------------------------------------
-CMD ["sleep", "infinity"]
+CMD ["sh", "-c", "python3 -c 'from gevent import monkey; monkey.patch_all(); import os; os.environ.setdefault(\"TEST_MODE\", \"1\"); import gunicorn.app.wsgiapp; gunicorn.app.wsgiapp.run()' --bind 0.0.0.0:${PORT} --worker-class gevent --workers 4 --worker-connections 1000 --keep-alive 30 --timeout 180 --preload app:app"]
