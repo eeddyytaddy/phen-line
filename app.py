@@ -1,4 +1,6 @@
 # app.py 
+from gevent import monkey
+monkey.patch_all()
 import os
 import io
 import json
@@ -100,8 +102,7 @@ import shared
 import routes_metrics 
 import metrics
 from resource_monitor import init_app
-from gevent import monkey
-monkey.patch_all()
+
 load_dotenv()   # 這行會去根目錄找 .env，並把變數載入 os.environ
 # ─────────────── Flask App ───────────────
 app = Flask(__name__)
