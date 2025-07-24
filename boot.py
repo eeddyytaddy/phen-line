@@ -1,19 +1,20 @@
 # boot.py
 
 """
-Bootstrap script for running the Flask app under Gevent's own WSGI server,
-avoiding any forking and thus eliminating threading._after_fork issues.
+Bootstrap for Gunicorn + Gevent: apply gevent patch (excluding threading),
+then expose the Flask app as 'application' for Gunicorn to load.
 """
 from gevent import monkey
-# Patch all IO modules; leave threading alone since we won't fork
+# Patch IO modules but leave threading intact to avoid threading._after_fork issues
 monkey.patch_all(thread=False)
 
-import os
-from gevent.pywsgi import WSGIServer
-from app import app  # your Flask application
+# Import and expose the Flask application
+from app import app as application
 
 if __name__ == '__main__':
+    # Fallback direct run: serve via Gevent WSGI
+    import os
+    from gevent.pywsgi import WSGIServer
     port = int(os.environ.get('PORT', '8080'))
     print(f"🚀 Starting Gevent WSGI server on 0.0.0.0:{port}...")
-    # Serve the Flask app; handles many concurrent requests via greenlets
-    WSGIServer(('0.0.0.0', port), app).serve_forever()
+    WSGIServer(('0.0.0.0', port), application).serve_forever()
