@@ -1,13 +1,13 @@
 # boot.py
 
-# 1. gevent 最全面的 monkey‐patch
+"""
+Bootstrap script for Gunicorn + Gevent that patches gevent without touching threading,
+then imports the Flask application. This ensures monkey-patching happens before any forking.
+"""
+
 from gevent import monkey
-monkey.patch_all()
+# Patch all necessary modules except threading to avoid replacing threading._stop with Event
+monkey.patch_all(thread=False)
 
-# 2. 砍掉 threading 內建的 _after_fork 與 Thread._stop
-import threading
-threading._after_fork      = lambda *a, **k: None
-threading.Thread._stop     = lambda self: None
-
-# 3. 再去 import 你的 Flask app
+# Now import the Flask application; Gunicorn will look for `application`
 from app import app as application
