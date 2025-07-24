@@ -1,16 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Locust script  – run-once, safe CSV, keep-alive
-───────────────────────────────────────────────
+Locust script – run-once, safe CSV(;), keep-alive
+──────────────────────────────────────────────────
 環境變數（可選）
   RUN_TIME_SEC   壓測秒數，預設 600 (=10 min)
-  SLEEP_ON_END   壓測完/略過後保活秒數，預設 300；0 表立即退出
+  SLEEP_ON_END   保活秒數，預設 300；0 代表立刻退出
   RUN_ONCE_LOCK  鎖檔路徑，預設容器 /data/.done，本機 ./.done
 """
 
-# ── 0. Monkey-patch User.stop ─────────────────────────────────────────────
-# 避免「unexpected state: stopping」例外
+# ╭─ 0. Monkey-patch：User.stop 忽略 stopping 狀態例外 ───────────╮
 from locust.user.users import User as _User
 _orig_stop = _User.stop
 def _safe_stop(self, force=False):
@@ -21,57 +20,76 @@ def _safe_stop(self, force=False):
             return
         raise
 _User.stop = _safe_stop
+# ╰──────────────────────────────────────────────────────────────╯
 
-# ── 1. 內部補丁：StatsCSVFileWriter 改用分號 & 任意參數 ────────────────
-import os, csv, sys
+# ╭─ 1. 內部補丁：StatsCSVFileWriter 全部改用分號 ────────────────╮
+import os, csv
 from pathlib import Path
 from gevent import spawn_later, sleep as gsleep
 from locust import stats as _stats, events
 
 class _PatchedWriter(_stats.StatsCSVFileWriter):
+    """
+    1. 兼容新版多參數簽名 (*args, **kwargs)
+    2. stats / history / failures 三種 CSV 均改 delimiter=';'
+    """
     def __init__(self, *args, **kwargs):
-        super(_PatchedWriter, self).__init__(*args, **kwargs)  # 相容新版簽名
-        fh = self.stats_history_csv_filehandle                 # 取檔案 handle
-        fh.seek(0); fh.truncate()
-        self.stats_history_csv_writer = csv.writer(
-            fh, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
-        )
-        self.stats_history_csv_writer.writerow(self.stats_history_csv_columns)
-        fh.flush()
-_stats.StatsCSVFileWriter = _PatchedWriter
+        super().__init__(*args, **kwargs)  # 先讓原生邏輯開好檔案
 
-# ── 2. 參數與一次鎖 ────────────────────────────────────────────────
+        # (handle attr, header attr, writer attr) 組
+        targets = [
+            ("stats_csv_filehandle",        "STATS_CSV_HEADERS",        "stats_csv_writer"),
+            ("stats_history_csv_filehandle","STATS_HISTORY_CSV_HEADERS","stats_history_csv_writer"),
+            ("failures_csv_filehandle",     "FAILURES_CSV_HEADERS",     "failures_csv_writer"),
+        ]
+        for fh_attr, hdr_attr, wr_attr in targets:
+            fh   = getattr(self, fh_attr, None)
+            hdrs = getattr(self, hdr_attr, None)
+            if fh is None or hdrs is None:
+                continue  # 某些版本可能沒 failures
+
+            fh.seek(0); fh.truncate()      # 清空逗號版內容
+            writer = csv.writer(
+                fh, delimiter=";",
+                quoting=csv.QUOTE_MINIMAL,
+                lineterminator="\n",
+            )
+            writer.writerow(hdrs)
+            setattr(self, wr_attr, writer)  # 用新的 writer 取代
+
+_stats.StatsCSVFileWriter = _PatchedWriter
+# ╰──────────────────────────────────────────────────────────────╯
+
+# ╭─ 2. 參數與 run-once 鎖 ────────────────────────────────────────╮
 RUN_TIME_SEC = int(os.getenv("RUN_TIME_SEC", "600"))
 SLEEP_KEEP   = int(os.getenv("SLEEP_ON_END", "300"))
-
 DEFAULT_LOCK = "/data/.done" if os.name != "nt" else ".done"
 SENTINEL     = Path(os.getenv("RUN_ONCE_LOCK", DEFAULT_LOCK))
 
 @events.init.add_listener
 def _setup(environment, **_):
     environment.stats.use_response_times_cache = True
-    if SENTINEL.exists():                      # 已跑過 → 立即退出
+    if SENTINEL.exists():
         print(f"[run-once] 偵測到 {SENTINEL}，跳過壓測。")
         spawn_later(1, lambda: environment.runner and environment.runner.quit())
 
 @events.test_start.add_listener
 def _auto_stop(environment, **_):
-    if not SENTINEL.exists():                  # 首次 → 排程自動停止
+    if not SENTINEL.exists():
         spawn_later(RUN_TIME_SEC, lambda: environment.runner and environment.runner.quit())
 
 @events.test_stop.add_listener
 def _on_stop(environment, **_):
-    # 建立鎖檔（若父資料夾不存在就先建立）
     SENTINEL.parent.mkdir(parents=True, exist_ok=True)
     if not SENTINEL.exists():
         SENTINEL.touch()
         print(f"[run-once] 壓測完成，已建立 {SENTINEL}")
-    # 依設定保活
     if SLEEP_KEEP > 0:
         print(f"[keep-alive] 容器將於 {SLEEP_KEEP}s 後退出")
         gsleep(SLEEP_KEEP)
+# ╰──────────────────────────────────────────────────────────────╯
 
-# ── 3. 壓測邏輯 ─────────────────────────────────────────────────────
+# ╭─ 3. 壓測使用者邏輯（LINE Bot 範例）────────────────────────────╮
 import hashlib, hmac, json, random, time, uuid
 from locust import HttpUser, between, task
 
@@ -100,7 +118,7 @@ class LineBotUser(HttpUser):
         self.uid = str(uuid.uuid4())
         self.hdr = {"Content-Type": "application/json"}
 
-    def _post(self, name):
+    def _post(self, name: str):
         payload = json.loads(json.dumps(self._cache[name]))
         ev = payload["events"][0]
         ev.update(
@@ -123,8 +141,9 @@ class LineBotUser(HttpUser):
                 request_type="PAYLOAD", name=f"{name}.json",
                 response_time=0, response_length=0, exception=exc
             )
+# ╰──────────────────────────────────────────────────────────────╯
 
-# ── 4. (可選) 自訂統計存檔 ─────────────────────────────────────
+# ╭─ 4. (可選) 自訂統計存檔 ───────────────────────────────────────╮
 try:
     from locust_db import save_stats
 
@@ -136,3 +155,4 @@ try:
             print(f"[locustfile] save_stats failed: {e}")
 except ImportError:
     pass
+# ╰──────────────────────────────────────────────────────────────╯
