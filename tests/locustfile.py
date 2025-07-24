@@ -6,62 +6,72 @@ Locust script  – run-once, safe CSV, keep-alive
 環境變數（可選）
   RUN_TIME_SEC   壓測秒數，預設 600 (=10 min)
   SLEEP_ON_END   壓測完/略過後保活秒數，預設 300；0 表立即退出
+  RUN_ONCE_LOCK  鎖檔路徑，預設容器 /data/.done，本機 ./.done
 """
 
-# ── 0. 內部補丁 ───────────────────────────────────────────────
+# ── 0. Monkey-patch User.stop ─────────────────────────────────────────────
+# 避免「unexpected state: stopping」例外
+from locust.user.users import User as _User
+_orig_stop = _User.stop
+def _safe_stop(self, force=False):
+    try:
+        return _orig_stop(self, force=force)
+    except Exception as e:
+        if "unexpected state" in str(e):
+            return
+        raise
+_User.stop = _safe_stop
+
+# ── 1. 內部補丁：StatsCSVFileWriter 改用分號 & 任意參數 ────────────────
 import os, csv, sys
 from pathlib import Path
 from gevent import spawn_later, sleep as gsleep
 from locust import stats as _stats, events
 
-# 分號 CSV writer
 class _PatchedWriter(_stats.StatsCSVFileWriter):
-    def __init__(self, environment, base):
-        super().__init__(environment, base)
-        self.stats_history_file.seek(0)
-        self.stats_history_file.truncate(0)
+    def __init__(self, *args, **kwargs):
+        super(_PatchedWriter, self).__init__(*args, **kwargs)  # 相容新版簽名
+        fh = self.stats_history_csv_filehandle                 # 取檔案 handle
+        fh.seek(0); fh.truncate()
         self.stats_history_csv_writer = csv.writer(
-            self.stats_history_file, delimiter=";",
-            quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
+            fh, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n"
         )
-        self.stats_history_csv_writer.writerow(self.STATS_HISTORY_CSV_HEADERS)
-        self.stats_history_file.flush()
-
+        self.stats_history_csv_writer.writerow(self.stats_history_csv_columns)
+        fh.flush()
 _stats.StatsCSVFileWriter = _PatchedWriter
 
-# ── 1. 參數與一次鎖 ──────────────────────────────────────────
+# ── 2. 參數與一次鎖 ────────────────────────────────────────────────
 RUN_TIME_SEC = int(os.getenv("RUN_TIME_SEC", "600"))
 SLEEP_KEEP   = int(os.getenv("SLEEP_ON_END", "300"))
-SENTINEL     = Path("/data/.done")        # 是否已跑過的鎖檔
+
+DEFAULT_LOCK = "/data/.done" if os.name != "nt" else ".done"
+SENTINEL     = Path(os.getenv("RUN_ONCE_LOCK", DEFAULT_LOCK))
 
 @events.init.add_listener
 def _setup(environment, **_):
-    # 打開 response-times cache，根治 ValueError
     environment.stats.use_response_times_cache = True
-
-    # 如果鎖檔已存在 ⇒ 立即結束 test_run，進入保活
-    if SENTINEL.exists():
-        print("[run-once] 偵測到 /data/.done，跳過壓測。")
+    if SENTINEL.exists():                      # 已跑過 → 立即退出
+        print(f"[run-once] 偵測到 {SENTINEL}，跳過壓測。")
         spawn_later(1, lambda: environment.runner and environment.runner.quit())
 
 @events.test_start.add_listener
 def _auto_stop(environment, **_):
-    # 第一次才需要排程自動停止
-    if not SENTINEL.exists():
+    if not SENTINEL.exists():                  # 首次 → 排程自動停止
         spawn_later(RUN_TIME_SEC, lambda: environment.runner and environment.runner.quit())
 
 @events.test_stop.add_listener
 def _on_stop(environment, **_):
-    # 第一次跑完 → 建鎖檔
+    # 建立鎖檔（若父資料夾不存在就先建立）
+    SENTINEL.parent.mkdir(parents=True, exist_ok=True)
     if not SENTINEL.exists():
         SENTINEL.touch()
-        print("[run-once] 壓測完成，已建立 /data/.done")
-    # 無論第一次或跳過，都依 SLEEP_KEEP 保活
+        print(f"[run-once] 壓測完成，已建立 {SENTINEL}")
+    # 依設定保活
     if SLEEP_KEEP > 0:
         print(f"[keep-alive] 容器將於 {SLEEP_KEEP}s 後退出")
         gsleep(SLEEP_KEEP)
 
-# ── 2. 壓測邏輯（與之前相同） ────────────────────────────────
+# ── 3. 壓測邏輯 ─────────────────────────────────────────────────────
 import hashlib, hmac, json, random, time, uuid
 from locust import HttpUser, between, task
 
@@ -114,7 +124,7 @@ class LineBotUser(HttpUser):
                 response_time=0, response_length=0, exception=exc
             )
 
-# ── 3. (可選) 自訂統計存檔 ───────────────────────────────────
+# ── 4. (可選) 自訂統計存檔 ─────────────────────────────────────
 try:
     from locust_db import save_stats
 
