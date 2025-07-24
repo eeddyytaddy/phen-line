@@ -7,7 +7,8 @@ import json
 import csv
 import sqlite3
 import threading
-threading.Thread._stop = lambda self: None
+threading._after_fork = lambda *args, **kwargs: None
+threading.Thread._stop   = lambda self: None
 from datetime import datetime as dt
 from random import randrange
 from collections import Counter
