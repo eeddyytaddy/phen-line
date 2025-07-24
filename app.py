@@ -594,18 +594,27 @@ def people_high5(tk, uid):
     try:
         df = pd.read_csv("daily_crowd_stats.csv", encoding="utf-8-sig")
         hr = dt.now().hour
-        top5 = (df[df["hour"] == hr]
-                .sort_values("count", ascending=False)
-                .head(5))
-        msg = "\n".join(f"{i+1}. {r.place}({r.count})"
-                        for i, r in enumerate(top5.itertuples()))
+        top5 = (
+            df[df["hour"] == hr]
+              .sort_values("count", ascending=False)
+              .head(5)
+        )
+        msg = "\n".join(
+            f"{i+1}. {r.place}({r.count})"
+            for i, r in enumerate(top5.itertuples())
+        )
         return top5["place"].tolist(), msg
     except Exception as e:
         print("people_high5 error:", e)
+        # 取得使用者語系
+        lang = _get_lang(uid)
         if tk:
-            safe_reply(tk, TextSendMessage(_t('data_fetch_failed')),uid)
-        return [], _t('data_fetch_failed')
-
+            safe_reply(
+                tk,
+                TextSendMessage(text=_t('data_fetch_failed', lang)),
+                uid
+            )
+        return [], _t('data_fetch_failed', lang)
 
 def send_questionnaire(tk,uid):
     lang = _get_lang(uid)
