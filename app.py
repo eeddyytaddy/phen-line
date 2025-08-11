@@ -1,4 +1,4 @@
-# app.py
+# app.py 
 import os
 import io
 import json
@@ -17,15 +17,11 @@ from linebot.models import (
     ButtonsTemplate, URIAction, QuickReply, QuickReplyButton
 )
 from linebot.models.events import PostbackEvent
-from shared import (
-    user_language, user_stage,
-    user_age, user_gender, user_trip_days,
-    user_preparing, user_plan_ready
-)
+
 # Matplotlib 無頭模式
 import matplotlib
 import urllib.parse
-from shared import user_location
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -33,7 +29,7 @@ import matplotlib.font_manager as fm
 from matplotlib.patches import Patch
 # 1. 先指定 font.family 為 'sans-serif'
 plt.rcParams['font.family'] = 'sans-serif'
-
+from linebot.exceptions import LineBotApiError
 # 2. 把常見的 CJK 與預設字體都加到 sans-serif 清單裡
 plt.rcParams['font.sans-serif'] = [
     'Source Han Sans TC',      # Adobe 版名，有安裝時可用
@@ -73,7 +69,6 @@ import pandas as pd
 import numpy as np
 import requests
 import googlemaps
-from shared import user_age, user_gender
 # 自製模組
 from timer import measure_time
 from report_runtime import fetch_data
@@ -101,7 +96,7 @@ import os
 from flask import Flask, request, jsonify, send_file
 from prometheus_client import make_wsgi_app
 from werkzeug.middleware.dispatcher import DispatcherMiddleware 
-
+import shared
 import routes_metrics 
 import metrics
 from resource_monitor import init_app
@@ -126,7 +121,7 @@ PHP_NGROK       = "https://penghu-linebot.onrender.com"
 GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSeT7kHB3bsE7rmxqJdzG42XfSS9ewNBBZPVH3xxunpYVcyDag/viewform?usp=header"
 GOOGLE_API_KEY  = os.getenv("GOOGLE_MAPS_API_KEY")
 # ─────────────── 每-user 語系設定 & 其他全域狀態 ───────────────
-from shared import user_language, user_stage
+
 
 
 approveLangRespond  = False
@@ -143,47 +138,126 @@ def _t(key: str, lang: str) -> str:
 
 def _get_lang(uid: str) -> str:
     """取得該 user 的語系設定"""
-    return user_language.get(uid, 'zh')
+    return shared.user_language.get(uid, 'zh')
 
 # ─────────────── LINE 安全封裝 ───────────────
-used_reply_tokens = set()  # 追蹤已使用的 reply token
-def safe_reply(token, msgs):
-    """安全的 reply 函式，避免重複使用 reply token"""
+used_reply_tokens = set()
+
+def safe_reply(token, msgs, uid=None):
+    """
+    安全的 reply 函式，避免重複使用 replyToken。
+    測試模式下可跳過實際 LINE 回覆呼叫，防止無效 token 錯誤。
+    """
     if not token:
-        print("Warning: Reply token is None or empty")
+        print("Warning: reply token is None or empty")
         return
-    
+
+    # 避免同一個 token 重複用
     if token in used_reply_tokens:
         print(f"Warning: Reply token {token} already used, skipping reply")
         return
-    
+
+    # **新增：測試環境跳過 LINE API 呼叫**
+    test_mode = os.getenv("TEST_MODE", "0") == "1"
+    # 簡單判斷：token 含有 '-' 視為非 LINE 平台生成（Locust UUID）
+    if test_mode or "-" in token:
+        print(f"[TestMode] Skip reply_message for token: {token}")
+        used_reply_tokens.add(token)
+        # 測試模式下直接視為成功回覆，不呼叫 LINE 平台
+        return
+
+    # 確保 msgs 為 list
     if not isinstance(msgs, list):
         msgs = [msgs]
-    
+
     try:
+        # 嘗試呼叫 LINE 回覆 API
         line_bot_api.reply_message(token, msgs)
-        used_reply_tokens.add(token)  # 標記為已使用
-        print(f"Reply sent successfully with token: {token}")
+        used_reply_tokens.add(token)
+        print(f"✅ Reply sent successfully with token: {token}")
+    except LineBotApiError as e:
+        # 取得錯誤細節
+        status_code = getattr(e, "status_code", None)
+        request_id  = getattr(e, "request_id", None)
+        error_message = e.error.message if hasattr(e, "error") and e.error else str(e)
+        print(f"❌ safe_reply error: status_code={status_code}, request_id={request_id}, message={error_message}")
+        # 標記 token 已使用，避免重複
+        used_reply_tokens.add(token)
+        # 若有提供 uid，改用 push 補發訊息
+        if uid:
+            print(f"↪️ safe_reply fallback to push for user {uid}")
+            try:
+                safe_push(uid, msgs)
+            except Exception as e2:
+                print(f"   ⚠️ safe_push fallback failed: {e2}")
     except Exception as e:
-        print(f"safe_reply error: {e}")
-        used_reply_tokens.add(token)  # 即使失敗也標記，避免重複嘗試
+        # 其它非 LineBotApiError 的例外
+        print(f"safe_reply unexpected error: {e}")
+
+
+
+from linebot.exceptions import LineBotApiError
+from linebot.models.send_messages import SendMessage
+import json
 
 def safe_push(uid, msgs):
-    """推送訊息，不受 reply token 限制"""
+    """
+    安全的 push 函式：
+    1) 只對看起來合法的 LINE userId (U 開頭) 嘗試 get_profile。
+    2) get_profile 若 404 (user not following)，直接跳過。
+    3) 其它錯誤、或 uid 無效，則記錄後 skip。
+    """
+    # 只 push 給 LINE userId
+    if not uid or not isinstance(uid, str) or not uid.startswith("U"):
+        print(f"Warning: skip safe_push due to invalid userId: {uid}")
+        return
+
     if not isinstance(msgs, list):
         msgs = [msgs]
+
+    # 驗證用戶是否為好友
     try:
-        line_bot_api.push_message(uid, msgs)
-        print(f"Push message sent successfully to: {uid}")
+        profile = line_bot_api.get_profile(uid)
+        print(f"User profile ok: {profile.display_name} ({uid})")
+    except LineBotApiError as e:
+        status = e.status_code
+        msg    = e.error.message if e.error else str(e)
+        if status == 404:
+            print(f"safe_push aborted: user {uid} not following (404)")
+            return
+        else:
+            print(f"safe_push get_profile error: status_code={status}, message={msg}")
+            return
     except Exception as e:
-        print(f"safe_push error: {e}")
+        print(f"safe_push unexpected error on get_profile: {e}")
+        return
+
+    # 分 batch 推送
+    batches = [msgs[i:i+5] for i in range(0, len(msgs), 5)]
+    for idx, batch in enumerate(batches, 1):
+        payloads = []
+        for m in batch:
+            if hasattr(m, "as_json_dict"):
+                pd = m.as_json_dict()
+                pd.pop("quickReply", None)
+                payloads.append(pd)
+            else:
+                payloads.append(str(m))
+        print(f"[Batch {idx}/{len(batches)}] payload: {json.dumps(payloads, ensure_ascii=False)}")
+        try:
+            line_bot_api.push_message(uid, batch)
+            print(f"[Batch {idx}] push ok ({len(batch)} msgs)")
+        except LineBotApiError as e:
+            print(f"[Batch {idx}] push error: status_code={e.status_code}, request_id={e.request_id}, message={e.error.message}")
+        except Exception as e:
+            print(f"[Batch {idx}] unexpected error: {e}")
 
 # ─────────────── 背景行程規劃 Thread ───────────────
 def _background_planning(option, reply_token, user_id):
     """背景行程規劃，使用 push 而非 reply"""
     try:
         process_travel_planning(option, reply_token, user_id)
-        user_plan_ready[user_id] = True
+        shared.user_plan_ready[user_id] = True
         
         # 規劃完成後推送通知
         lang = _get_lang(user_id)
@@ -194,7 +268,7 @@ def _background_planning(option, reply_token, user_id):
         lang = _get_lang(user_id)
         safe_push(user_id, TextSendMessage(text=_t("planning_failed", lang)))
     finally:
-        user_preparing[user_id] = False
+        shared.user_preparing[user_id] = False
 # ========== 以下為行程／人氣／推薦等核心函式 ==========
 # （完整邏輯保持不變，只把 TEXTS[...] → _t('key')，
 #   中文 Label → to_en(...) if language_1=='en' else 原文）
@@ -311,7 +385,7 @@ def update_plan_csv_with_populartimes(plan_csv_file, user_id, crowd_source="hist
         avg_crowd = load_historical_avg_crowd()
 
     # 1. 取得使用者位置
-    loc = user_location.get(user_id)
+    loc = shared.user_location.get(user_id)
     if not loc:
         raise RuntimeError(f"No location for user {user_id}")
     user_lat, user_lng = loc
@@ -387,11 +461,11 @@ def run_ml_sort(option, reply_token, user_id, df_plan):
     以 XGBoost 依性別、年齡做排序，回傳 userID list
     """
     # 1) 取出原始文字性別，並轉成數值
-    raw_gender = user_gender.get(user_id, "")
+    raw_gender = shared.user_gender.get(user_id, "")
     gender = FlexMessage.classify_gender(raw_gender)  # 0=男, 1=女, 2=其他
 
     # 2) 取年齡
-    age = user_age.get(user_id, 30)
+    age = shared.user_age.get(user_id, 30)
 
     # 3) 印出 debug 訊息並呼叫 XGBoost
     #print(f"run_ml_sort: gender={gender}, age={age}, df_plan.dtypes={df_plan.dtypes}")
@@ -434,13 +508,17 @@ def process_travel_planning(option, reply_token, user_id):
     並在每一步發生錯誤時回報，最後標記完成狀態。
     """
     # 0. 前置資料檢查
-    if user_gender[user_id] is None or user_age[user_id] is None:
+    if shared.user_gender.get(user_id) is None or shared.user_age.get(user_id) is None:
         lang = _get_lang(user_id)
-        safe_reply(reply_token, TextSendMessage(_t('collect_info', lang)))
-        user_preparing[user_id] = False
+        safe_reply(
+            reply_token,
+            TextSendMessage(text=_t('collect_info', lang)),
+            user_id
+        )
+        shared.user_preparing[user_id] = False
         return
 
-    # 1. 讀入對應天數 CSV
+    # 1. 讀入對應天數的行程 CSV
     csv_map = {
         "兩天一夜": PLAN_2DAY,
         "三天兩夜": PLAN_3DAY,
@@ -448,14 +526,13 @@ def process_travel_planning(option, reply_token, user_id):
         "五天四夜": PLAN_5DAY
     }
     csv_path = csv_map.get(option, PLAN_2DAY)
-
     try:
         df_plan = pd.read_csv(csv_path, encoding="utf-8-sig")
     except Exception as e:
         print("read CSV error:", e)
         lang = _get_lang(user_id)
-        safe_push(user_id, TextSendMessage(_t('data_fetch_failed', lang)))
-        user_preparing[user_id] = False
+        safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        shared.user_preparing[user_id] = False
         return
 
     # 2. 機器學習排序
@@ -464,8 +541,8 @@ def process_travel_planning(option, reply_token, user_id):
     except Exception as e:
         print("XGboost_plan error:", e)
         lang = _get_lang(user_id)
-        safe_push(user_id, TextSendMessage(_t('data_fetch_failed', lang)))
-        user_preparing[user_id] = False
+        safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        shared.user_preparing[user_id] = False
         return
 
     # 3. 景點過濾
@@ -474,8 +551,8 @@ def process_travel_planning(option, reply_token, user_id):
     except Exception as e:
         print("filter error:", e)
         lang = _get_lang(user_id)
-        safe_push(user_id, TextSendMessage(_t('data_fetch_failed', lang)))
-        user_preparing[user_id] = False
+        safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        shared.user_preparing[user_id] = False
         return
 
     # 4. 重排名（加入即時人潮與距離）
@@ -484,8 +561,8 @@ def process_travel_planning(option, reply_token, user_id):
     except Exception as e:
         print("ranking error:", e)
         lang = _get_lang(user_id)
-        safe_push(user_id, TextSendMessage(_t('data_fetch_failed', lang)))
-        user_preparing[user_id] = False
+        safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        shared.user_preparing[user_id] = False
         return
 
     # 5. 上傳最終結果
@@ -494,21 +571,21 @@ def process_travel_planning(option, reply_token, user_id):
     except Exception as e:
         print("upload error:", e)
         lang = _get_lang(user_id)
-        safe_push(user_id, TextSendMessage(_t('data_fetch_failed', lang)))
-        user_preparing[user_id] = False
+        safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        shared.user_preparing[user_id] = False
         return
 
     # 6. 標記該使用者的規劃已完成
-    user_plan_ready[user_id] = True
-    user_preparing[user_id]  = False
+    shared.user_plan_ready[user_id] = True
+    shared.user_preparing[user_id]  = False
 
-    # （可選）如需立即推送結果給使用者，取消下行註解：
+    # 可選）如需立即推送結果給使用者，取消下行註解：
     # safe_push(user_id, FlexMessage.show_plan(PLAN_CSV))
 
 
 
 @measure_time
-def people_high5(tk=None):
+def people_high5(tk, uid):
     """回傳目前時段最壅擠前 5 名 (list, text)"""
     try:
         df = pd.read_csv("daily_crowd_stats.csv", encoding="utf-8-sig")
@@ -522,29 +599,30 @@ def people_high5(tk=None):
     except Exception as e:
         print("people_high5 error:", e)
         if tk:
-            safe_reply(tk, TextSendMessage(_t('data_fetch_failed')))
+            safe_reply(tk, TextSendMessage(_t('data_fetch_failed')),uid)
         return [], _t('data_fetch_failed')
 
 
-def send_questionnaire(tk):
+def send_questionnaire(tk,uid):
+    lang = _get_lang(uid)
     btn = ButtonsTemplate(
-        title=to_en("填寫問卷") if user_language == "en" else "填寫問卷",
+        title=to_en("填寫問卷") if lang == "en" else "填寫問卷",
         text=_t('reply_questionnaire'),
         actions=[URIAction(
-            label=to_en("開始填寫") if user_language == "en" else "開始填寫",
+            label=to_en("開始填寫") if shared.user_language == "en" else "開始填寫",
             uri=GOOGLE_FORM_URL
         )]
     )
     safe_reply(tk, TemplateSendMessage(
         alt_text=_t('reply_questionnaire'),
         template=btn
-    ))
+    ),uid)
 
 @measure_time
-def send_crowd_analysis(tk):
+def send_crowd_analysis(tk,uid):
     safe_reply(tk, [
         TextSendMessage("https://how-many-people.eeddyytaddy.workers.dev")
-    ])
+    ],uid)
 
 
 @measure_time
@@ -555,7 +633,7 @@ def recommend_general_places(tk, uid):
     lang = _get_lang(uid)
     try:
         # 1) 人潮前五
-        dont_go, _ = people_high5()
+        dont_go, _ = people_high5(tk,uid)
 
         # 2) 天氣、溫度、潮汐
         try:
@@ -573,9 +651,9 @@ def recommend_general_places(tk, uid):
             tide = 0.0
 
         # 3) 性別 & 年齡轉換
-        raw_gender = user_gender.get(uid, "")
+        raw_gender = shared.user_gender.get(uid, "")
         gender_code = FlexMessage.classify_gender(raw_gender)
-        age = user_age.get(uid, 30)
+        age = shared.user_age.get(uid, 30)
 
         # 4) 模型推薦
         rec = XGBOOST_predicted.XGboost_recommend2(
@@ -592,10 +670,10 @@ def recommend_general_places(tk, uid):
             TextSendMessage(text=website),
             TextSendMessage(text=maplink)
         ]
-        safe_reply(tk, msgs)
+        safe_reply(tk, msgs,uid)
     except Exception as e:
         print("❌ recommend_general_places error:", e)
-        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)),uid)
 
 
 @measure_time
@@ -611,7 +689,7 @@ def recommend_sustainable_places(tk, uid):
 
     try:
         # ---------- 1) 人潮 ----------
-        dont_go, crowd_msg = people_high5()
+        dont_go, crowd_msg = people_high5(tk,uid)
 
         # ---------- 2) 天氣 ----------
         try:
@@ -636,9 +714,9 @@ def recommend_sustainable_places(tk, uid):
             tide   = 0.0
 
         # ---------- 4) 使用者資料 ----------
-        raw_gender  = user_gender.get(uid, "")
+        raw_gender  = shared.user_gender.get(uid, "")
         gender_code = FlexMessage.classify_gender(raw_gender)   # 0/1/2
-        age         = user_age.get(uid, 30)
+        age         = shared.user_age.get(uid, 30)
 
         # ---------- 5) XGBoost 推薦 ----------
         try:
@@ -680,11 +758,11 @@ def recommend_sustainable_places(tk, uid):
                 original_content_url=img_url,
                 preview_image_url   =img_url
             )
-        ])
+        ],uid)
 
     except Exception as e:
         print("❌ recommend_sustainable_places error:", e)
-        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)))
+        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)),uid)
 
 
 @measure_time
@@ -695,9 +773,9 @@ def search_nearby_places(replyTK, uid, keyword):
     lang = _get_lang(uid)
 
     # 1) 從記憶體讀取該使用者位置
-    loc = user_location.get(uid)
+    loc = shared.user_location.get(uid)
     if not loc:
-        safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)))
+        safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)),uid)
         return
     lat, lon = loc
 
@@ -706,17 +784,17 @@ def search_nearby_places(replyTK, uid, keyword):
         Googlemap_function.googlemap_search_nearby(lat, lon, keyword)
     except Exception as e:
         print("googlemap_search_nearby error:", e)
-        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)))
+        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)),uid)
         return
 
     # 3) 產生並回傳 Carousel
     try:
         contents = FlexMessage.Carousel_contents(RECOMMEND_CSV, uid)
         carousel = FlexMessage.Carousel(contents, uid)
-        safe_reply(replyTK, carousel)
+        safe_reply(replyTK, carousel,uid)
     except Exception as e:
         print("Carousel generation error:", e)
-        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)))
+        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)),uid)
 
         
 @measure_time
@@ -738,7 +816,7 @@ def send_rental_car(reply_token, uid):
     safe_reply(reply_token, [
         TextSendMessage(text=prompt),
         TextSendMessage(text=url)
-    ])
+    ],uid)
 
 
 @measure_time
@@ -749,22 +827,23 @@ def handle_ask_language(uid, replyTK):
         QuickReplyButton(action=MessageAction(label="中文(Chinese)", text="中文")),
         QuickReplyButton(action=MessageAction(label="英文(English)", text="English"))
     ])
-    safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr))
-    user_stage[uid] = 'got_language'
+    safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr), uid)
+    # 原來是 got_language，改成 ask_language
+    shared.user_stage[uid] = 'ask_language'
 
 @measure_time
 def handle_language(uid, text, replyTK):
     low = text.lower()
     if low in ("中文", "zh"):
-        user_language[uid] = "zh"
+        shared.user_language[uid] = "zh"
     elif low in ("english", "en"):
-        user_language[uid] = "en"
+        shared.user_language[uid] = "en"
     else:
-        safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", _get_lang(uid))))
+        safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", _get_lang(uid))),uid)
         return
 
-    user_stage[uid] = 'got_age'
-    safe_reply(replyTK, TextSendMessage(text=_t("ask_age", _get_lang(uid))))
+    shared.user_stage[uid] = 'got_age'
+    safe_reply(replyTK, TextSendMessage(text=_t("ask_age", _get_lang(uid))),uid)
 
 
 @measure_time
@@ -779,20 +858,20 @@ def handle_gender_buttons(uid, lang, replyTK):
         for g in ["男", "女", "其他"]
     ]
     tpl = ButtonsTemplate(text=_t("ask_gender", lang), actions=actions)
-    safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_gender", lang), template=tpl))
-    user_stage[uid] = 'got_gender'
+    safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_gender", lang), template=tpl),uid)
+    shared.user_stage[uid] = 'got_gender'
 
 @measure_time
 def handle_gender(uid, text, replyTK):
     ENG2ZH = {"Male": "男", "Female": "女", "Other": "其他"}
     zh_text = ENG2ZH.get(text, text)
     if zh_text not in ("男", "女", "其他"):
-        safe_reply(replyTK, TextSendMessage(text=_t("invalid_gender", _get_lang(uid))))
+        safe_reply(replyTK, TextSendMessage(text=_t("invalid_gender", _get_lang(uid))),uid)
         return
 
-    user_gender[uid] = zh_text
-    user_stage[uid]  = 'got_location'
-    safe_reply(replyTK, FlexMessage.ask_location())
+    shared.user_gender[uid] = zh_text
+    shared.user_stage[uid]  = 'got_location'
+    safe_reply(replyTK, FlexMessage.ask_location(),uid)
 
 
 @measure_time
@@ -807,7 +886,7 @@ def handle_location(uid, msg, replyTK):
     lon  = msg["longitude"]
 
     # 2) 存到 shared.user_location (記憶體字典)，每個 user_id 獨立
-    user_location[uid] = (lat, lon)
+    shared.user_location[uid] = (lat, lon)
 
     # 3) 準備 QuickReply 讓使用者選擇行程天數
     lang = _get_lang(uid)
@@ -823,13 +902,13 @@ def handle_location(uid, msg, replyTK):
     ]
 
     # 4) 更新使用者階段並回覆
-    user_stage[uid] = 'got_days'
+    shared.user_stage[uid] = 'got_days'
     safe_reply(
         replyTK,
         TextSendMessage(
             text=_t("position_saved", lang),
             quick_reply=QuickReply(items=qr_items)
-        )
+        ),uid
     )
 
 
@@ -841,13 +920,13 @@ def handle_days(uid, text, replyTK):
     choice  = eng2zh.get(text, text)
 
     if choice not in zh_days:
-        safe_reply(replyTK, TextSendMessage(text=_t("invalid_days", lang)))
+        safe_reply(replyTK, TextSendMessage(text=_t("invalid_days", lang)),uid)
         return
 
-    user_trip_days[uid]   = choice
-    user_preparing[uid]   = True
-    user_plan_ready[uid]  = False
-    user_stage[uid]       = 'ready'
+    shared.user_trip_days[uid]   = choice
+    shared.user_preparing[uid]   = True
+    shared.user_plan_ready[uid]  = False
+    shared.user_stage[uid]       = 'ready'
 
     threading.Thread(
         target=_background_planning,
@@ -855,116 +934,74 @@ def handle_days(uid, text, replyTK):
         daemon=True
     ).start()
 
-    safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)))
-
+    safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)),uid)
 
 @measure_time
 def handle_free_command(uid, text, replyTK):
     """
-    Ready 階段的自由指令處理：包含「收集資料」「景點人潮」「行程規劃」
-    「景點推薦」「永續觀光」「附近搜尋」「關鍵字搜尋」「租車」等指令。
+    Ready 階段的自由指令處理：
+    包含「收集資料」「景點人潮」「行程規劃」
+    「景點推薦」「永續觀光」「附近搜尋」
+    「關鍵字搜尋」「租車」等指令。
     """
     from linebot.models import (
         TextSendMessage, TemplateSendMessage, ConfirmTemplate,
         QuickReply, QuickReplyButton, MessageAction, StickerSendMessage
     )
+    import threading
 
     low = text.lower()
     lang = _get_lang(uid)
 
     # 使用者目前狀態
-    preparing = user_preparing.get(uid, False)
-    plan_ready = user_plan_ready.get(uid, False)
-    days = user_trip_days.get(uid)
-    # 天數標籤：中/英文
+    preparing = shared.user_preparing.get(uid, False)
+    plan_ready = shared.user_plan_ready.get(uid, False)
+    days      = shared.user_trip_days.get(uid)  # e.g. "三天兩夜"
     days_label = to_en(days) if lang == 'en' else days
 
     # 指令集合
-    recollect_keys = {
-        "收集資料&修改資料", "收集資料&修改資料(data collection)",
-        "data collection", "collect data", "1"
-    }
-    crowd_keys = {
-        "景點人潮", "景點人潮(crowd analyzer)",
-        "crowd analyzer", "crowd analysis", "crowd info", "3"
-    }
-    plan_keys = {
-        "行程規劃", "行程規劃(itinerary planning)",
-        "itinerary planning", "plan itinerary", "6"
-    }
-    recommend_keys = {
-        "景點推薦", "景點推薦(attraction recommendation)",
-        "attraction recommendation", "recommend spot", "2"
-    }
-    sustainable_keys = {
-        "永續觀光", "永續觀光(sustainable tourism)",
-        "sustainable tourism", "2-1"
-    }
-    general_keys = {
-        "一般景點推薦", "一般景點推薦(general recommendation)",
-        "general recommendation", "2-2"
-    }
-    nearby_keys = {
-        "附近搜尋", "附近搜尋(nearby search)",
-        "nearby search", "4"
-    }
-    rental_keys = {
-        "租車", "租車(car rental information)",
-        "car rental information", "car rental", "5"
-    }
-    keyword_map = {
-        "餐廳": "restaurants",
-        "停車場": "parking",
-        "風景區": "scenic spots",
-        "住宿": "accommodation"
-    }
+    recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
+    crowd_keys       = {"景點人潮", "景點人潮(crowd analyzer)", "crowd analyzer", "crowd analysis", "crowd info", "3"}
+    plan_keys        = {"行程規劃", "行程規劃(itinerary planning)", "itinerary planning", "plan itinerary", "6"}
+    recommend_keys   = {"景點推薦", "景點推薦(attraction recommendation)", "attraction recommendation", "recommend spot", "2"}
+    sustainable_keys = {"永續觀光", "永續觀光(sustainable tourism)", "sustainable tourism", "2-1"}
+    general_keys     = {"一般景點推薦", "一般景點推薦(general recommendation)", "general recommendation", "2-2"}
+    nearby_keys      = {"附近搜尋", "附近搜尋(nearby search)", "nearby search", "4"}
+    rental_keys      = {"租車", "租車(car rental information)", "car rental information", "car rental", "5"}
+    keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+    is_keyword       = text in keyword_map or low in set(keyword_map.values())
 
-    # 1) 收集資料
+    # 1) 重新收集資料
     if low in recollect_keys:
-        prompt = _t("ask_language", "zh")
-        qr = QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="中文(Chinese)", text="中文")),
-            QuickReplyButton(action=MessageAction(label="英文(English)", text="English"))
-        ])
-        safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr))
-        user_stage[uid] = 'got_language'
+        handle_ask_language(uid, replyTK)
         return
 
     # 2) 景點人潮
     if low in crowd_keys:
-        send_crowd_analysis(replyTK)
+        send_crowd_analysis(replyTK, uid)
         return
 
     # 3) 行程規劃
     if low in plan_keys:
+        # 背景正在進行中
         if preparing:
-            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", lang)))
+            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", lang)), uid)
+
+        # 已有規劃結果
         elif plan_ready:
-            # 系統說明文字
+            safe_reply(replyTK, FlexMessage.ask_route_option(), uid)
+            # 推送詳細說明
             if lang == 'en':
-                desc1 = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
-            else:
-                desc1 = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
-            
-            sys_label = _t("system_route", lang)
-            if lang == 'en':
-                desc_sys = (
+                desc1    = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
+                sys_label = _t("system_route", lang)
+                desc_sys  = (
                     f"【{sys_label}】\n"
                     "1. Show full route (red line).\n"
                     "2. Show segment by segment (blue line).\n"
                     "3. Clear system route."
                 )
-            else:
-                desc_sys = (
-                    f"【{sys_label}】依照人潮較少規劃\n"
-                    "1. 整段顯示完整路線（紅線）。\n"
-                    "2. 分段逐段顯示（藍線）。\n"
-                    "3. 清除系統路線。"
-                )
-
-            usr_label = _t("user_route", lang)
-            if lang == 'en':
-                desc_usr = (
+                usr_label = _t("user_route", lang)
+                desc_usr  = (
                     f"【{usr_label}】\n"
                     "1. Tap \"Add to route\" to include in list.\n"
                     "2. Show all at once (green line).\n"
@@ -972,40 +1009,61 @@ def handle_free_command(uid, text, replyTK):
                     "4. Clear user route."
                 )
             else:
-                desc_usr = (
+                desc1    = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
+                sys_label = _t("system_route", lang)
+                desc_sys  = (
+                    f"【{sys_label}】依照人潮較少規劃\n"
+                    "1. 整段顯示完整路線（紅線）。\n"
+                    "2. 分段逐段顯示（藍線）。\n"
+                    "3. 清除系統路線。"
+                )
+                usr_label = _t("user_route", lang)
+                desc_usr  = (
                     f"【{usr_label}】\n"
                     "1. 點「加入路線」加入清單。\n"
                     "2. 一次性顯示（綠線）。\n"
                     "3. 分段逐段顯示（橘線）。\n"
                     "4. 清除使用者路線。"
                 )
-            safe_reply(replyTK, FlexMessage.ask_route_option())
             safe_push(uid, [
                 TextSendMessage(text=desc1),
                 TextSendMessage(text=desc_sys),
                 TextSendMessage(text=desc_usr),
             ])
+
+        # 尚未有結果，但如果已選擇天數，重新啟動背景規劃
         else:
-            safe_reply(replyTK, TextSendMessage(text=_t("collect_info", lang)))
+            if days:
+                shared.user_preparing[uid]  = True
+                shared.user_plan_ready[uid] = False
+                threading.Thread(
+                    target=_background_planning,
+                    args=(days, replyTK, uid),
+                    daemon=True
+                ).start()
+                safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)), uid)
+            else:
+                # 真正沒收集過資料時才提示
+                safe_reply(replyTK, TextSendMessage(text=_t("collect_info", lang)), uid)
         return
 
-    # 4) 景點推薦 (詢問是否永續)
+    # 4) 景點推薦 → 詢問永續 vs 一般
     if low in recommend_keys:
-        yes_lbl = _t("yes", lang)
-        no_lbl = _t("no", lang)
-        payload_yes = "永續觀光" if lang=='zh' else "sustainable tourism"
-        payload_no = "一般景點推薦" if lang=='zh' else "general recommendation"
+        yes_lbl    = _t("yes", lang)
+        no_lbl     = _t("no", lang)
+        payload_yes = "永續觀光" if lang == 'zh' else "sustainable tourism"
+        payload_no  = "一般景點推薦" if lang == 'zh' else "general recommendation"
         tpl = ConfirmTemplate(
             text=_t("ask_sustainable", lang),
             actions=[
                 MessageAction(label=yes_lbl, text=payload_yes),
-                MessageAction(label=no_lbl, text=payload_no)
+                MessageAction(label=no_lbl,  text=payload_no),
             ]
         )
-        safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", lang), template=tpl))
+        safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", lang), template=tpl), uid)
         return
 
-    # 5) 永續或一般推薦
+    # 5) 永續 or 一般景點推薦
     if low in sustainable_keys:
         recommend_sustainable_places(replyTK, uid)
         return
@@ -1015,25 +1073,26 @@ def handle_free_command(uid, text, replyTK):
 
     # 6) 附近搜尋
     if low in nearby_keys:
-        safe_reply(replyTK, FlexMessage.ask_keyword())
+        safe_reply(replyTK, FlexMessage.ask_keyword(), uid)
         return
 
     # 7) 關鍵字搜尋
-    if text in keyword_map or low in set(keyword_map.values()):
+    if is_keyword:
         if low in set(keyword_map.values()):
-            zh = next(k for k,v in keyword_map.items() if v==low)
+            zh = next(k for k, v in keyword_map.items() if v == low)
             search_nearby_places(replyTK, uid, zh)
         else:
             search_nearby_places(replyTK, uid, text)
         return
 
-    # 8) 租車
+    # 8) 租車資訊
     if low in rental_keys:
         send_rental_car(replyTK, uid)
         return
 
-    # 9) 其他忽略
+    # 9) 其他不處理
     return
+
 
 
 
@@ -1056,37 +1115,28 @@ def linebot_route():
     return "OK"
 
 def handle_single_event(ev):
-    """處理單一事件"""
+    """處理單一事件，分發給 message 或 postback handler"""
     ev_type = ev.get("type")
-    uid = ev["source"]["userId"]
-    lang = _get_lang(uid)
-    stage = user_stage.get(uid, 'ask_language')  # 預設階段
+    uid     = ev["source"]["userId"]
+    lang    = shared.user_language.get(uid, 'zh')
     replyTK = ev.get("replyToken")
-    
-    # 檢查 reply token 是否有效
+
     if not replyTK:
-        print("Warning: No reply token in event")
+        print("Warning: no reply token")
         return
-    
-    print(f"Handling event type: {ev_type}, user: {uid}, stage: {stage}")
 
-    # 1) PostbackEvent：處理按鈕
+    print(f"Handling event type: {ev_type}, user: {uid}, lang: {lang}")
+
     if ev_type == "postback":
-        handle_postback_event(ev, uid, lang, stage, replyTK)
-        return
-
-    # 2) MessageEvent：階段式對話 + 自由指令
+        # 統一交給 handle_postback_event 處理
+        handle_postback_event(ev, uid, lang, replyTK)
     elif ev_type == "message":
-        handle_message_event(ev, uid, lang, stage, replyTK)
-        return
-
-    # 3) 其他事件類型
+        handle_message_event(ev, uid, lang, replyTK)
     else:
         print(f"Unhandled event type: {ev_type}")
-        return
 
-def handle_postback_event(ev, uid, lang, stage, replyTK):
-    """處理 Postback 事件"""
+def handle_postback_event(ev, uid, lang, replyTK):
+    """統一處理所有 Postback 事件"""
     data = ev["postback"]["data"]
     print(f"Postback data: {data}")
 
@@ -1097,18 +1147,15 @@ def handle_postback_event(ev, uid, lang, stage, replyTK):
 
     # 天數按鈕
     if data in ("兩天一夜", "三天兩夜", "四天三夜", "五天四夜"):
-        user_trip_days[uid] = data
-        user_preparing[uid] = True
-        user_plan_ready[uid] = False
-        user_stage[uid] = 'ready'
-        
-        # 先回覆等待訊息
-        safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)))
-        
-        # 然後啟動背景處理
+        shared.user_trip_days[uid] = data
+        shared.user_preparing[uid] = True
+        shared.user_plan_ready[uid] = False
+        shared.user_stage[uid] = 'ready'
+
+        safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)), uid)
         threading.Thread(
             target=_background_planning,
-            args=(data, None, uid),  # 不傳 reply_token 給背景處理
+            args=(data, None, uid),
             daemon=True
         ).start()
         return
@@ -1116,145 +1163,188 @@ def handle_postback_event(ev, uid, lang, stage, replyTK):
     # 系統路線 / 使用者路線
     sys_zh, usr_zh = "系統路線", "使用者路線"
     sys_en, usr_en = to_en(sys_zh), to_en(usr_zh)
-    
     if data in (sys_zh, sys_en):
         try:
             lat, lon = get_location.get_location(LOCATION_FILE)
             uid_qs = urllib.parse.quote_plus(uid)
             url = f"https://system-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
-            safe_reply(replyTK, TextSendMessage(text=url))
-            user_stage[uid] = 'ready'
+            safe_reply(replyTK, TextSendMessage(text=url), uid)
+            shared.user_stage[uid] = 'ready'
         except Exception as e:
             print(f"Error getting location: {e}")
-            safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)))
+            safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)), uid)
         return
-        
+
     if data in (usr_zh, usr_en):
         try:
             lat, lon = get_location.get_location(LOCATION_FILE)
             uid_qs = urllib.parse.quote_plus(uid)
             url = f"https://user-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
-            safe_reply(replyTK, TextSendMessage(text=url))
-            user_stage[uid] = 'ready'
+            safe_reply(replyTK, TextSendMessage(text=url), uid)
+            shared.user_stage[uid] = 'ready'
         except Exception as e:
             print(f"Error getting location: {e}")
-            safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)))
+            safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)), uid)
         return
 
-def handle_message_event(ev, uid, lang, stage, replyTK):
-    """處理訊息事件"""
-    msg = ev["message"]
-    msgType = msg.get("type")
-    text = (msg.get("text") or "").strip()
-    
-    print(f"Message type: {msgType}, text: {text}, stage: {stage}")
-
-    # 根據階段處理訊息
-    if stage == 'ask_language' and msgType == "text":
-        handle_ask_language(uid, replyTK)
-        return
-
-    if stage == 'got_language' and msgType == "text":
-        handle_language(uid, text, replyTK)
-        return
-
-    if stage == 'got_age' and msgType == "text":
-        try:
-            age = int(text)
-            if 0 <= age <= 120:
-                user_age[uid] = age
-                handle_gender_buttons(uid, lang, replyTK)
-            else:
-                safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", lang)))
-        except ValueError:
-            safe_reply(replyTK, TextSendMessage(text=_t("enter_number", lang)))
-        return
-
-    if stage == 'got_gender' and msgType == "text":
-        handle_gender(uid, text, replyTK)
-        return
-
-    if stage == 'got_location' and msgType == "location":
-        handle_location(uid, msg, replyTK)
-        return
-
-    if stage == 'got_days' and msgType == "text":
-        handle_days(uid, text, replyTK)
-        return
-
-    if stage == 'ready' and msgType == "text":
-        handle_free_command(uid, text, replyTK)
-        return
-
-    # 處理其他訊息類型
-    if msgType == "image":
-        safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)))
-        return
-        
-    if msgType == "sticker":
-        safe_reply(replyTK, StickerSendMessage(
-            package_id=msg["packageId"], 
-            sticker_id=msg["stickerId"]
-        ))
-        return
-
-# ========== Postback ========== #
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    uid  = event.source.user_id
-    data = event.postback.data
-    tk   = event.reply_token
-    lang = _get_lang(uid)
-
-    # 1) 性別按鈕
-    if data in ("男", "女", "其他"):
-        gender_1 = FlexMessage.classify_gender(data)
-        user_stage[uid] = 'got_location'
-        safe_reply(tk, FlexMessage.ask_location())
-        return
-
-    # 2) 天數按鈕
-    if data in ("兩天一夜", "三天兩夜", "四天三夜", "五天四夜"):
-        global preparing, plan_ready
-        preparing  = True
-        plan_ready = False
-        user_stage[uid] = 'ready'
-        threading.Thread(
-            target=_background_planning,
-            args=(data, tk, uid),
-            daemon=True
-        ).start()
-        safe_reply(tk, TextSendMessage(text=_t("please_wait", lang)))
-        return
-
-    # 3) 系統路線 / 使用者路線 按鈕
-    sys_zh, usr_zh = "系統路線", "使用者路線"
-    sys_en, usr_en = to_en(sys_zh), to_en(usr_zh)
-    valid_sys = {sys_zh, sys_en}
-    valid_usr = {usr_zh, usr_en}
-
-    if data in valid_sys:
-        try:
-            lat, lon = get_location.get_location(LOCATION_FILE)
-            url = f"https://system-plan.eeddyytaddy.workers.dev?lat={lat}&lng={lon}"
-            safe_reply(tk, TextSendMessage(text=url))
-        except:
-            safe_reply(tk, TextSendMessage(text=_t("cannot_get_location", lang)))
-        user_stage[uid] = 'ready'
-        return
-
-    if data in valid_usr:
-        try:
-            lat, lon = get_location.get_location(LOCATION_FILE)
-            url = f"https://user-plan.eeddyytaddy.workers.dev?lat={lat}&lng={lon}"
-            safe_reply(tk, TextSendMessage(text=url))
-        except:
-            safe_reply(tk, TextSendMessage(text=_t("cannot_get_location", lang)))
-        user_stage[uid] = 'ready'
-        return
-
-    # 其餘 Postback 直接忽略
+    # 其他 Postback 一律忽略
     print("Unhandled postback:", data)
+
+
+
+from linebot.models import TextSendMessage, StickerSendMessage
+
+# 在 app.py 開頭新增一個全域字典用於每個使用者的 Lock
+user_event_lock = {}
+
+def handle_message_event(ev, uid, lang, replyTK):
+    """
+    處理文字／位置／圖片／貼圖事件：
+    0) 重啟資料收集流程
+    1) 自由指令
+    2) 階段流程：語言→年齡→性別→位置→天數→ready
+    """
+    # 使用者事件處理鎖定，確保同一使用者事件順序執行
+    if uid not in user_event_lock:
+        user_event_lock[uid] = threading.Lock()
+    with user_event_lock[uid]:
+        msg = ev.get("message", {})
+        msgType = msg.get("type")
+        text = (msg.get("text") or "").strip()
+        low = text.lower()
+
+        # —— 0) 重啟資料收集流程 ——
+        if msgType == "text" and text.startswith("收集資料"):
+            handle_ask_language(uid, replyTK)
+            return
+
+        # —— 1) 自由指令 ——
+        crowd_keys  = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
+        plan_keys   = {"行程規劃", "plan itinerary", "6", "行程規劃(itinerary planning)"}
+        rec_keys    = {"景點推薦", "attraction recommendation", "2", "景點推薦(attraction recommendation)"}
+        sust_keys   = {"永續觀光", "sustainable tourism", "2-1"}
+        gen_keys    = {"一般景點推薦", "general recommendation", "2-2"}
+        nearby_keys = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
+        rental_keys = {"租車", "car rental information", "5", "租車(car rental information)"}
+        keyword_map = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+        is_keyword  = text in keyword_map or low in set(keyword_map.values())
+
+        if msgType == "text":
+            # Special handling for itinerary planning to prompt missing info
+            if low in plan_keys:
+                missing_field = None
+                if shared.user_age.get(uid) is None:
+                    missing_field = 'age'
+                elif shared.user_gender.get(uid) is None:
+                    missing_field = 'gender'
+                elif shared.user_location.get(uid) is None:
+                    missing_field = 'location'
+                elif shared.user_trip_days.get(uid) is None:
+                    missing_field = 'days'
+
+                if missing_field:
+                    # Prompt the user for the missing information
+                    current_lang = _get_lang(uid)
+                    if missing_field == 'age':
+                        shared.user_stage[uid] = 'got_age'
+                        safe_reply(replyTK, TextSendMessage(text=_t("ask_age", current_lang)), uid)
+                    elif missing_field == 'gender':
+                        shared.user_stage[uid] = 'got_gender'
+                        handle_gender_buttons(uid, current_lang, replyTK)
+                    elif missing_field == 'location':
+                        shared.user_stage[uid] = 'got_location'
+                        safe_reply(replyTK, FlexMessage.ask_location(), uid)
+                    elif missing_field == 'days':
+                        shared.user_stage[uid] = 'got_days'
+                        # Prepare quick-reply options for trip duration
+                        days_options = ["兩天一夜", "三天兩夜", "四天三夜", "五天四夜"]
+                        qr_items = [
+                            QuickReplyButton(
+                                action=MessageAction(
+                                    label=to_en(d) if current_lang == 'en' else d,
+                                    text = to_en(d) if current_lang == 'en' else d
+                                )
+                            )
+                            for d in days_options
+                        ]
+                        safe_reply(replyTK, TextSendMessage(text=_t("ask_days", current_lang),
+                                                            quick_reply=QuickReply(items=qr_items)), uid)
+                    return
+
+                # All data collected, proceed to itinerary planning
+                handle_free_command(uid, text, replyTK)
+                return
+
+            # Other free commands and keyword-based searches
+            if (low in crowd_keys or low in rec_keys or low in sust_keys or 
+                low in gen_keys or low in nearby_keys or low in rental_keys or is_keyword):
+                handle_free_command(uid, text, replyTK)
+                return
+
+        # —— 2) 階段流程 ——
+        stage = shared.user_stage.get(uid, 'ask_language')
+        print(f"[Stage flow] type={msgType}, text={text}, stage={stage}")
+
+        # 第一步：選擇語言
+        if stage == 'ask_language' and msgType == "text":
+            if low in ("中文", "zh", "english", "en"):
+                handle_language(uid, text, replyTK)
+            else:
+                safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", _get_lang(uid))), uid)
+            return
+
+        # **(Removed 'got_language' check – no longer needed)**
+
+        # 第二步：輸入年齡
+        if stage == 'got_age' and msgType == "text":
+            try:
+                age = int(text)
+                if 0 <= age <= 120:
+                    shared.user_age[uid] = age
+                    handle_gender_buttons(uid, _get_lang(uid), replyTK)
+                else:
+                    safe_reply(replyTK, TextSendMessage(text=_t("enter_valid_age", _get_lang(uid))), uid)
+            except ValueError:
+                safe_reply(replyTK, TextSendMessage(text=_t("enter_number", _get_lang(uid))), uid)
+            return
+
+        # 第三步：處理性別
+        if stage == 'got_gender' and msgType == "text":
+            handle_gender(uid, text, replyTK)
+            return
+
+        # 第四步：處理位置（Location message）
+        if stage == 'got_location' and msgType == "location":
+            handle_location(uid, msg, replyTK)
+            return
+
+        # 第五步：處理天數
+        if stage == 'got_days' and msgType == "text":
+            handle_days(uid, text, replyTK)
+            return
+
+        # 第六步：Ready 階段的自由指令
+        if stage == 'ready' and msgType == "text":
+            handle_free_command(uid, text, replyTK)
+            return
+
+        # 處理圖片訊息
+        if msgType == "image":
+            safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", _get_lang(uid))), uid)
+            return
+
+        # 處理貼圖訊息
+        if msgType == "sticker":
+            safe_reply(replyTK, StickerSendMessage(package_id=msg.get("packageId"),
+                                                   sticker_id=msg.get("stickerId")), uid)
+            return
+
+        # 其他類型的訊息不處理
+        return
+
+
+
+
 import threading
 import time
 
@@ -1273,6 +1363,6 @@ cleanup_thread.start()
 if __name__ == "__main__":
     print("🚀 Flask server start …")
     os.environ.setdefault('APP_ENV', 'loadtest')
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",8000)), debug=True)
 
 # ---------------- END OF app.py ------------------------------------
