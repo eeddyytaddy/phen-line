@@ -1,8 +1,6 @@
 # app.py 
 from gevent import monkey
 monkey.patch_all()
-from gevent.pool import Pool
-from linebot.models import TextSendMessage
 import os
 import io
 import json
@@ -121,8 +119,6 @@ ACCESS_TOKEN   = os.getenv("LINE_ACCESS_TOKEN",   "your_line_access_token_here")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "your_line_channel_secret_here")
 line_bot_api   = LineBotApi(ACCESS_TOKEN)
 handler        = WebhookHandler(CHANNEL_SECRET)
-MAX_PARALLEL_PLANNING = int(os.getenv("MAX_PARALLEL_PLANNING", "40"))
-PLANNING_POOL = Pool(MAX_PARALLEL_PLANNING)
 # 常數
 #PHP_ngrok = "https://flask-service2.peterlinebot.ip-ddns.com"
 PHP_NGROK       = "https://penghu-linebot.onrender.com"
@@ -137,22 +133,6 @@ approveAgeRespond   = False
 approveGender       = False
 approveDaysRespond  = False
 # ─────────────── 多語小助手 ───────────────
-def enqueue_planning(option: str, reply_token: str | None, user_id: str) -> None:
-    """
-    把 _background_planning 排進固定大小的 Greenlet 池。
-    若池子滿了，立刻回覆「系統忙碌，請稍候」。
-    """
-    if PLANNING_POOL.free_count() == 0:
-        lang = _get_lang(user_id)
-        safe_reply(
-            reply_token,
-            TextSendMessage(text=_t("system_busy", lang)),
-            user_id,
-        )
-        return
-
-    PLANNING_POOL.spawn(_background_planning, option, reply_token, user_id)
-
 def _t(key: str, lang: str) -> str:
     """
     從 I18N 裡撈對應語系字串；若找不到，回傳 key 本身。
@@ -636,6 +616,8 @@ def people_high5(tk, uid):
             )
         return [], _t('data_fetch_failed', lang)
 
+
+
 def send_questionnaire(tk,uid):
     lang = _get_lang(uid)
     btn = ButtonsTemplate(
@@ -713,107 +695,89 @@ def recommend_general_places(tk, uid):
 def recommend_sustainable_places(tk, uid):
     """
     永續觀光推薦（含性別／年齡轉換）
-    1. 避開擁擠 Top-5
-    2. 取天氣／溫度／潮汐（safe_call＋safe_float）
-    3. 以 XGBoost 做推薦（safe_call）
-    4. 拉景點資料、組訊息並回傳
+    1. 取得人潮 Top-5 → 避免推薦
+    2. 讀天氣／溫度／潮汐並做標籤映射
+    3. 依性別‧年齡跑 XGBoost 推薦
+    4. 取景點資料，回傳「說明文字 ＋ 圖片」
     """
-    # ---------- 共用工具 --------------------------------------------------
-    import time, numpy as np
-    from requests.exceptions import ConnectionError, Timeout, RequestException
-    from http.client import RemoteDisconnected
-
-    def safe_float(v, default=0.0):
-        try:
-            return float(v)
-        except (ValueError, TypeError):
-            print(f"⚠️ safe_float: 轉換失敗 → {default}  (input={v})")
-            return default
-
-    def safe_call(fn, default, *args, **kwargs):
-        """
-        對任何可能連網的函式提供 3 次重試。
-        捕捉範圍：ConnectionError / Timeout / RemoteDisconnected / RequestException
-        """
-        for i in range(3):
-            try:
-                return fn(*args, **kwargs)
-            except (ConnectionError, Timeout, RemoteDisconnected, RequestException) as e:
-                print(f"⚠️ safe_call {fn.__name__} 失敗 {i+1}/3：{e}")
-                time.sleep(0.6 * (i + 1))
-            except Exception as e:
-                print(f"⚠️ safe_call {fn.__name__} 其它例外：{e}")
-                break
-        return default
-
     lang = _get_lang(uid)
 
     try:
-        # ---------- 1) 人潮黑名單 ----------------------------------------
-        dont_go, crowd_msg = people_high5(tk, uid)
+        # ---------- 1) 人潮 ----------
+        dont_go, crowd_msg = people_high5(tk,uid)
 
-        # ---------- 2) 天氣相關 ------------------------------------------
-        raw_weather = safe_call(Now_weather.weather, "晴")
-        w_str = {
-            '晴': '晴', '多雲': '多雲', '陰': '陰',
+        # ---------- 2) 天氣 ----------
+        try:
+            raw_weather = Now_weather.weather()
+        except Exception:
+            raw_weather = "晴"
+
+        weather_map = {
+            '晴':  '晴',  '多雲': '多雲', '陰': '陰',
             '小雨': '下雨', '中雨': '下雨', '大雨': '下雨', '雷陣雨': '下雨'
-        }.get(raw_weather, '晴')
+        }
+        w_str = weather_map.get(raw_weather, '晴')
 
-        temp_c = safe_float(safe_call(Now_weather.temperature, 25.0), 25.0)
-        tide   = safe_float(safe_call(Now_weather.tidal,        0.0),  0.0)
+        # ---------- 3) 溫度‧潮汐 ----------
+        try:
+            temp_c = float(Now_weather.temperature() or 25.0)
+        except Exception:
+            temp_c = 25.0
+        try:
+            tide   = float(Now_weather.tidal() or 0.0)
+        except Exception:
+            tide   = 0.0
 
-        # ---------- 3) User profile -------------------------------------
+        # ---------- 4) 使用者資料 ----------
         raw_gender  = shared.user_gender.get(uid, "")
         gender_code = FlexMessage.classify_gender(raw_gender)   # 0/1/2
         age         = shared.user_age.get(uid, 30)
 
-        # ---------- 4) XGBoost 推薦 -------------------------------------
-        def _run_xgb(weather_tag):
-            return ML.XGboost_recommend3(
-                np.array([weather_tag]), gender_code, age, tide, temp_c, dont_go
+        # ---------- 5) XGBoost 推薦 ----------
+        try:
+            rec = ML.XGboost_recommend3(
+                np.array([w_str]), gender_code, age, tide, temp_c, dont_go
+            )
+        except ValueError as e:          # 若出現 unseen label
+            print("XGBoost fallback:", e)
+            rec = ML.XGboost_recommend3(
+                np.array(['晴']), gender_code, age, tide, temp_c, dont_go
             )
 
-        rec = safe_call(lambda: _run_xgb(w_str), "")
-        if not rec:                         # 三次都失敗 → fallback
-            rec = safe_call(lambda: _run_xgb('晴'), "山水沙灘")  # 固定備用景點
-
-        # 如仍落在黑名單，再換一次
+        # 如果結果還落在「不建議前往」名單，就再跑一次
         if rec in dont_go:
-            rec = safe_call(lambda: _run_xgb(w_str), rec)
+            rec = ML.XGboost_recommend3(
+                np.array([w_str]), gender_code, age, tide, temp_c, dont_go
+            )
 
-        # ---------- 5) 景點資訊 -----------------------------------------
-        web, img, maplink = safe_call(
-            PH_Attractions.Attractions_recommend1,
-            ("", "", ""),
-            rec
-        )
+        # ---------- 6) 取景點資訊 ----------
+        web, img, maplink = PH_Attractions.Attractions_recommend1(rec)
 
-        # 圖片 URL 處理
+        # Robust 圖片 URL
         if img.startswith(("http://", "https://")):
             img_url = img
-        elif "imgur.com" in img:
-            img_url = f"https://i.imgur.com/{img.rstrip('/').split('/')[-1]}.jpg"
+        elif "imgur.com" in img:         # 轉 i.imgur.com 直連
+            _id = img.rstrip("/").split("/")[-1]
+            img_url = f"https://i.imgur.com/{_id}.jpg"
         else:
-            img_url = f"https://{img.lstrip('/')}.jpg" if img else ""
+            img_url = f"https://{img.lstrip('/')}.jpg"
 
-        # ---------- 6) 成品訊息 -----------------------------------------
+        # ---------- 7) 組訊息並送出 ----------
         header = f"📊 {crowd_msg}"
         title  = to_en('永續觀光') if lang == 'en' else '永續觀光'
         body   = f"{header}\n{title}：{rec}\n{web}\n{maplink}"
 
-        msgs = [TextSendMessage(text=body)]
-        if img_url:
-            msgs.append(ImageSendMessage(
+        safe_reply(tk, [
+            TextSendMessage(text=body),
+            ImageSendMessage(
                 original_content_url=img_url,
                 preview_image_url   =img_url
-            ))
-
-        safe_reply(tk, msgs, uid)
+            )
+        ],uid)
 
     except Exception as e:
         print("❌ recommend_sustainable_places error:", e)
-        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
-
+        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)),uid)
 
 
 @measure_time
@@ -994,145 +958,147 @@ def handle_location(uid, msg, replyTK):
     )
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# 處理使用者輸入「兩天一夜／三天兩夜／四天三夜／五天四夜」的文字訊息
-# ──────────────────────────────────────────────────────────────────────────
 @measure_time
-def handle_days(user_id: str, text: str, reply_token: str) -> None:
-    """
-    依照使用者輸入（天數選項）更新狀態，並將行程規劃排入背景佇列。
-
-    Parameters
-    ----------
-    user_id : str
-        LINE 使用者 ID
-    text : str
-        使用者輸入的文字（可能是中文或經 to_en 處理過的英文）
-    reply_token : str
-        LINE reply token，用於立即回覆訊息
-    """
-    # 1) 支援的天數選項（中文）
+def handle_days(uid, text, replyTK):
     zh_days = ["兩天一夜", "三天兩夜", "四天三夜", "五天四夜"]
-    # 2) 建立「英文→中文」對照，以防使用者傳的是英文代碼
-    eng2zh = {to_en(d): d for d in zh_days}
+    eng2zh  = {to_en(d): d for d in zh_days}
+    lang    = _get_lang(uid)
+    choice  = eng2zh.get(text, text)
 
-    lang   = _get_lang(user_id)
-    choice = eng2zh.get(text, text)          # 先嘗試轉回中文
-
-    # ── 輸入不合法 ──
     if choice not in zh_days:
-        safe_reply(
-            reply_token,
-            TextSendMessage(text=_t("invalid_days", lang)),
-            user_id,
-        )
+        safe_reply(replyTK, TextSendMessage(text=_t("invalid_days", lang)),uid)
         return
 
-    # ── 更新共享狀態 ──
-    shared.user_trip_days[user_id]  = choice
-    shared.user_preparing[user_id]  = True
-    shared.user_plan_ready[user_id] = False
-    shared.user_stage[user_id]      = "ready"
+    shared.user_trip_days[uid]   = choice
+    shared.user_preparing[uid]   = True
+    shared.user_plan_ready[uid]  = False
+    shared.user_stage[uid]       = 'ready'
 
-    # ── 回覆「請稍候」，並將規劃任務排進固定大小的 Greenlet Pool ──
-    safe_reply(
-        reply_token,
-        TextSendMessage(text=_t("please_wait", lang)),
-        user_id,
-    )
-    enqueue_planning(choice, reply_token, user_id)
+    threading.Thread(
+        target=_background_planning,
+        args=(choice, replyTK, uid),
+        daemon=True
+    ).start()
 
+    safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)),uid)
 
 
-# app.py
-# ----------------------------------------------------------------------
-@measure_time
-def handle_free_command(uid: str, text: str, replyTK) -> None:
+def handle_free_command(uid, text, replyTK):
     """
     Ready 階段的自由指令處理：
-    包含「收集資料」「景點人潮」「行程規劃」「景點推薦」
-         「永續觀光」「附近搜尋」「關鍵字搜尋」「租車」等指令。
+    包含「收集資料」「景點人潮」「行程規劃」
+    「景點推薦」「永續觀光」「附近搜尋」
+    「關鍵字搜尋」「租車」等指令。
     """
-
-    # ---- 0. 前置 ------------------------------------------------------
     from linebot.models import (
         TextSendMessage, TemplateSendMessage, ConfirmTemplate,
         QuickReply, QuickReplyButton, MessageAction, StickerSendMessage
     )
-    low  = text.lower()
+    import threading
+
+    low = text.lower()
     lang = _get_lang(uid)
 
-    # 使用者狀態
-    preparing   = shared.user_preparing.get(uid, False)
-    plan_ready  = shared.user_plan_ready.get(uid, False)
-    days        = shared.user_trip_days.get(uid)       # 例如 "三天兩夜"
-    days_label  = to_en(days) if lang == "en" else days
+    # 使用者目前狀態
+    preparing = shared.user_preparing.get(uid, False)
+    plan_ready = shared.user_plan_ready.get(uid, False)
+    days      = shared.user_trip_days.get(uid)  # e.g. "三天兩夜"
+    days_label = to_en(days) if lang == 'en' else days
 
-    # ---- 1. 指令集合 --------------------------------------------------
+    # 指令集合
     recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
-    crowd_keys       = {"景點人潮", "景點人潮(crowd analyzer)", "crowd analyzer",
-                        "crowd analysis", "crowd info", "3"}
-    plan_keys        = {"行程規劃", "行程規劃(itinerary planning)",
-                        "itinerary planning", "plan itinerary", "6"}
-    recommend_keys   = {"景點推薦", "景點推薦(attraction recommendation)",
-                        "attraction recommendation", "recommend spot", "2"}
-    sustainable_keys = {"永續觀光", "永續觀光(sustainable tourism)",
-                        "sustainable tourism", "2-1"}
-    general_keys     = {"一般景點推薦", "一般景點推薦(general recommendation)",
-                        "general recommendation", "2-2"}
+    crowd_keys       = {"景點人潮", "景點人潮(crowd analyzer)", "crowd analyzer", "crowd analysis", "crowd info", "3"}
+    plan_keys        = {"行程規劃", "行程規劃(itinerary planning)", "itinerary planning", "plan itinerary", "6"}
+    recommend_keys   = {"景點推薦", "景點推薦(attraction recommendation)", "attraction recommendation", "recommend spot", "2"}
+    sustainable_keys = {"永續觀光", "永續觀光(sustainable tourism)", "sustainable tourism", "2-1"}
+    general_keys     = {"一般景點推薦", "一般景點推薦(general recommendation)", "general recommendation", "2-2"}
     nearby_keys      = {"附近搜尋", "附近搜尋(nearby search)", "nearby search", "4"}
-    rental_keys      = {"租車", "租車(car rental information)",
-                        "car rental information", "car rental", "5"}
+    rental_keys      = {"租車", "租車(car rental information)", "car rental information", "car rental", "5"}
+    keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+    is_keyword       = text in keyword_map or low in set(keyword_map.values())
 
-    keyword_map = {"餐廳": "restaurants", "停車場": "parking",
-                   "風景區": "scenic spots", "住宿": "accommodation"}
-    is_keyword  = text in keyword_map or low in set(keyword_map.values())
-
-    # ---- 2. 各指令邏輯 ------------------------------------------------
-
-    # 2-1 收集 / 重啟流程
+    # 1) 重新收集資料
     if low in recollect_keys:
         handle_ask_language(uid, replyTK)
         return
 
-    # 2-2 景點人潮
+    # 2) 景點人潮
     if low in crowd_keys:
         send_crowd_analysis(replyTK, uid)
         return
 
-    # 2-3 行程規劃 ------------------------------------------------------
+    # 3) 行程規劃
     if low in plan_keys:
-        # (a) 規劃中
+        # 背景正在進行中
         if preparing:
-            safe_reply(replyTK, TextSendMessage(text=_t("still_processing", lang)), uid)
-            return
-        # (b) 規劃已完成
-        if plan_ready:
-            safe_reply(replyTK,
-                       TextSendMessage(text=_t("plan_ready", lang).format(days_label)), uid)
-            send_questionnaire(replyTK, uid)
-            return
-        # (c) 尚未開始 → 送進佇列
-        if not days:
-            # 尚未選天數
-            safe_reply(replyTK, TextSendMessage(text=_t("ask_days", lang)), uid)
-            return
+            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", lang)), uid)
 
-        shared.user_preparing[uid]  = True
-        shared.user_plan_ready[uid] = False
+        # 已有規劃結果
+        elif plan_ready:
+            safe_reply(replyTK, FlexMessage.ask_route_option(), uid)
+            # 推送詳細說明
+            if lang == 'en':
+                desc1    = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
+                sys_label = _t("system_route", lang)
+                desc_sys  = (
+                    f"【{sys_label}】\n"
+                    "1. Show full route (red line).\n"
+                    "2. Show segment by segment (blue line).\n"
+                    "3. Clear system route."
+                )
+                usr_label = _t("user_route", lang)
+                desc_usr  = (
+                    f"【{usr_label}】\n"
+                    "1. Tap \"Add to route\" to include in list.\n"
+                    "2. Show all at once (green line).\n"
+                    "3. Show segment by segment (orange line).\n"
+                    "4. Clear user route."
+                )
+            else:
+                desc1    = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
+                sys_label = _t("system_route", lang)
+                desc_sys  = (
+                    f"【{sys_label}】依照人潮較少規劃\n"
+                    "1. 整段顯示完整路線（紅線）。\n"
+                    "2. 分段逐段顯示（藍線）。\n"
+                    "3. 清除系統路線。"
+                )
+                usr_label = _t("user_route", lang)
+                desc_usr  = (
+                    f"【{usr_label}】\n"
+                    "1. 點「加入路線」加入清單。\n"
+                    "2. 一次性顯示（綠線）。\n"
+                    "3. 分段逐段顯示（橘線）。\n"
+                    "4. 清除使用者路線。"
+                )
+            safe_push(uid, [
+                TextSendMessage(text=desc1),
+                TextSendMessage(text=desc_sys),
+                TextSendMessage(text=desc_usr),
+            ])
 
-        # ★★★  核心改動：排進背景工作佇列  ★★★
-        enqueue_planning(days, None, uid)
-
-        safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)), uid)
+        # 尚未有結果，但如果已選擇天數，重新啟動背景規劃
+        else:
+            if days:
+                shared.user_preparing[uid]  = True
+                shared.user_plan_ready[uid] = False
+                threading.Thread(
+                    target=_background_planning,
+                    args=(days, replyTK, uid),
+                    daemon=True
+                ).start()
+                safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)), uid)
+            else:
+                # 真正沒收集過資料時才提示
+                safe_reply(replyTK, TextSendMessage(text=_t("collect_info", lang)), uid)
         return
 
-    # 2-4 景點推薦 → 先詢問永續/一般
+    # 4) 景點推薦 → 詢問永續 vs 一般
     if low in recommend_keys:
-        yes_lbl     = _t("yes", lang)
-        no_lbl      = _t("no", lang)
-        payload_yes = "永續觀光" if lang == "zh" else "sustainable tourism"
-        payload_no  = "一般景點推薦" if lang == "zh" else "general recommendation"
+        yes_lbl    = _t("yes", lang)
+        no_lbl     = _t("no", lang)
+        payload_yes = "永續觀光" if lang == 'zh' else "sustainable tourism"
+        payload_no  = "一般景點推薦" if lang == 'zh' else "general recommendation"
         tpl = ConfirmTemplate(
             text=_t("ask_sustainable", lang),
             actions=[
@@ -1140,14 +1106,10 @@ def handle_free_command(uid: str, text: str, replyTK) -> None:
                 MessageAction(label=no_lbl,  text=payload_no),
             ]
         )
-        safe_reply(
-            replyTK,
-            TemplateSendMessage(alt_text=_t("ask_sustainable", lang), template=tpl),
-            uid
-        )
+        safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", lang), template=tpl), uid)
         return
 
-    # 2-5 永續 / 一般推薦
+    # 5) 永續 or 一般景點推薦
     if low in sustainable_keys:
         recommend_sustainable_places(replyTK, uid)
         return
@@ -1155,25 +1117,27 @@ def handle_free_command(uid: str, text: str, replyTK) -> None:
         recommend_general_places(replyTK, uid)
         return
 
-    # 2-6 附近搜尋：詢問關鍵字
+    # 6) 附近搜尋
     if low in nearby_keys:
         safe_reply(replyTK, FlexMessage.ask_keyword(), uid)
         return
 
-    # 2-7 關鍵字搜尋（餐廳、停車場…）
+    # 7) 關鍵字搜尋
     if is_keyword:
-        kw = next((k for k, v in keyword_map.items() if v == low), text)
-        search_nearby_places(replyTK, uid, kw)
+        if low in set(keyword_map.values()):
+            zh = next(k for k, v in keyword_map.items() if v == low)
+            search_nearby_places(replyTK, uid, zh)
+        else:
+            search_nearby_places(replyTK, uid, text)
         return
 
-    # 2-8 租車
+    # 8) 租車資訊
     if low in rental_keys:
         send_rental_car(replyTK, uid)
         return
 
-    # 2-9 其他 → 不處理
+    # 9) 其他不處理
     return
-
 
 
 
@@ -1222,32 +1186,34 @@ def handle_postback_event(ev, uid, lang, replyTK):
     data = ev["postback"]["data"]
     print(f"Postback data: {data}")
 
-    # 1) 性別按鈕
+    # 性別按鈕
     if data in ("男", "女", "其他"):
         handle_gender(uid, data, replyTK)
         return
 
-    # 2) 天數按鈕
+    # 天數按鈕
     if data in ("兩天一夜", "三天兩夜", "四天三夜", "五天四夜"):
-        shared.user_trip_days[uid]  = data
-        shared.user_preparing[uid]  = True
+        shared.user_trip_days[uid] = data
+        shared.user_preparing[uid] = True
         shared.user_plan_ready[uid] = False
-        shared.user_stage[uid]      = 'ready'
+        shared.user_stage[uid] = 'ready'
 
-        # 先告知使用者「請稍候」，再把行程規劃排進佇列
         safe_reply(replyTK, TextSendMessage(text=_t("please_wait", lang)), uid)
-        enqueue_planning(data, None, uid)
+        threading.Thread(
+            target=_background_planning,
+            args=(data, None, uid),
+            daemon=True
+        ).start()
         return
 
-    # 3) 系統路線／使用者路線按鈕
+    # 系統路線 / 使用者路線
     sys_zh, usr_zh = "系統路線", "使用者路線"
     sys_en, usr_en = to_en(sys_zh), to_en(usr_zh)
-
     if data in (sys_zh, sys_en):
         try:
-            lat, lon   = get_location.get_location(LOCATION_FILE)
-            uid_qs     = urllib.parse.quote_plus(uid)
-            url        = f"https://system-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
+            lat, lon = get_location.get_location(LOCATION_FILE)
+            uid_qs = urllib.parse.quote_plus(uid)
+            url = f"https://system-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
             safe_reply(replyTK, TextSendMessage(text=url), uid)
             shared.user_stage[uid] = 'ready'
         except Exception as e:
@@ -1257,9 +1223,9 @@ def handle_postback_event(ev, uid, lang, replyTK):
 
     if data in (usr_zh, usr_en):
         try:
-            lat, lon   = get_location.get_location(LOCATION_FILE)
-            uid_qs     = urllib.parse.quote_plus(uid)
-            url        = f"https://user-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
+            lat, lon = get_location.get_location(LOCATION_FILE)
+            uid_qs = urllib.parse.quote_plus(uid)
+            url = f"https://user-plan.eeddyytaddy.workers.dev/?uid={uid_qs}&lat={lat}&lng={lon}"
             safe_reply(replyTK, TextSendMessage(text=url), uid)
             shared.user_stage[uid] = 'ready'
         except Exception as e:
@@ -1267,7 +1233,7 @@ def handle_postback_event(ev, uid, lang, replyTK):
             safe_reply(replyTK, TextSendMessage(text=_t("cannot_get_location", lang)), uid)
         return
 
-    # 4) 其他 Postback 直接忽略
+    # 其他 Postback 一律忽略
     print("Unhandled postback:", data)
 
 
@@ -1432,14 +1398,8 @@ cleanup_thread.start()
 
 # ================= MAIN =========================================== #
 if __name__ == "__main__":
-    from gevent import monkey;  monkey.patch_all()      # 確保先 patch
-    from gevent.pywsgi import WSGIServer
-
-    port = int(os.getenv("PORT", 10000))
-    # backlog 設大一點避免 502，log=None 可省略存取 log 開銷
-    http_server = WSGIServer(("0.0.0.0", port), app,
-                             backlog=2048, log=None)
-    print(f"🚀 gevent WSGI server started on :{port}")
-    http_server.serve_forever()
+    print("🚀 Flask server start …")
+    os.environ.setdefault('APP_ENV', 'loadtest')
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)), debug=True)
 
 # ---------------- END OF app.py ------------------------------------
