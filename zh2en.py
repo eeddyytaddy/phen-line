@@ -105,7 +105,7 @@ TEXTS: dict[str, dict[str, object]] = {
         "user_route":          "使用者路線",
 
         # 規劃結果通知（已加入）
-        "planning_completed":  "✅ 行程規劃完成！我已將結果推送給您。",
+        "planning_completed":  "✅ 行程規劃完成！",
         "planning_failed":     "❌ 行程規劃失敗，請稍後再試。",
 
         # 景點推薦
@@ -164,7 +164,7 @@ TEXTS: dict[str, dict[str, object]] = {
         "send_location":       "Send Location",
 
         # 規劃結果通知（已加入）
-        "planning_completed":  "✅ Your itinerary is ready — I've pushed the results to you.",
+        "planning_completed":  "✅ Your itinerary is ready.",
         "planning_failed":     "❌ Itinerary planning failed. Please try again later.",
 
         # 景點推薦
