@@ -769,10 +769,7 @@ def recommend_sustainable_places(tk, uid):
 
         safe_reply(tk, [
             TextSendMessage(text=body),
-            ImageSendMessage(
-                original_content_url=img_url,
-                preview_image_url   =img_url
-            )
+            
         ],uid)
 
     except Exception as e:
