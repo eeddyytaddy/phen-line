@@ -763,9 +763,9 @@ def recommend_sustainable_places(tk, uid):
             img_url = f"https://{img.lstrip('/')}.jpg"
 
         # ---------- 7) 組訊息並送出 ----------
-        header = f"📊 {crowd_msg}"
+        #header = f"📊 {crowd_msg}"
         title  = to_en('永續觀光') if lang == 'en' else '永續觀光'
-        body   = f"{header}\n{title}：{rec}\n{web}\n{maplink}"
+        body   = f"{title}：{rec}\n{web}\n{maplink}"
 
         safe_reply(tk, [
             TextSendMessage(text=body),
