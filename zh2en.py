@@ -1,3 +1,4 @@
+# zh2en.py
 """
 Centralized Chinese-to-English mappings and multilingual UI text
 for the Penghu LINE Bot.
@@ -48,7 +49,6 @@ ZH2EN: dict[str, str] = {
     "好":       "OK",
 
     # === Price level (Google place) ===
-    # 注意：這些 Price Level 只是按鍵對照表，用於單詞轉換
     "免費":       "Free",
     "低價位":     "Cheap",
     "中等價位":   "Moderate",
@@ -59,6 +59,10 @@ ZH2EN: dict[str, str] = {
 
     # === Misc actions ===
     "查看地圖":   "View Map",
+
+    # === Planning status (短語映射) ===
+    "規劃完成": "Planning Completed",
+    "規劃失敗": "Planning Failed",
 }
 
 def to_en(chinese_label: str) -> str:
@@ -90,7 +94,7 @@ TEXTS: dict[str, dict[str, object]] = {
         "collect_info":        "⚠️ 請先完成資料收集",
         "cannot_get_location": "無法取得您的位置，請重新傳送位置資訊",
         "ask_location":        "請告訴系統您目前的位置",
-        
+
         # 驗證
         "enter_valid_age":     "請輸入正確年紀",
         "enter_number":        "請輸入數字",
@@ -99,9 +103,15 @@ TEXTS: dict[str, dict[str, object]] = {
         "ask_route_option":    "請選擇您要的路線",
         "system_route":        "系統路線",
         "user_route":          "使用者路線",
-        #景點推薦
-        'yes': '是',
-        'no': '否',
+
+        # 規劃結果通知（已加入）
+        "planning_completed":  "✅ 行程規劃完成！我已將結果推送給您。",
+        "planning_failed":     "❌ 行程規劃失敗，請稍後再試。",
+
+        # 景點推薦
+        "yes": "是",
+        "no": "否",
+
         # 數據/網路
         "data_fetch_failed":   "資料取得失敗，請稍後再試。",
 
@@ -123,8 +133,9 @@ TEXTS: dict[str, dict[str, object]] = {
 
         # 價格顯示前綴
         "price_label":         "價格：",
-        'view_map': ' 查看地圖',
-        'no_price_info': '沒價錢資訊',
+        "view_map": ' 查看地圖',
+        "no_price_info": '沒價錢資訊',
+
         # 價格對應表（Google price_level 0-4）
         "price_map": {
             0: "免費",
@@ -133,11 +144,12 @@ TEXTS: dict[str, dict[str, object]] = {
             3: "較高價位",
             4: "高價位",
         },
+
+        # Nearby keywords
         "風景區": "風景區",
         "餐廳":   "餐廳",
         "停車場": "停車場",
         "住宿":   "住宿",
-        
     },
 
     # ----------------------------  English  ----------------------------
@@ -150,13 +162,19 @@ TEXTS: dict[str, dict[str, object]] = {
         "ask_days":            "Please choose trip duration",
         "ask_location":        "Please tell the system your current location",
         "send_location":       "Send Location",
-         #景點推薦
-        'yes': 'yes',
-        'no': 'no',
+
+        # 規劃結果通知（已加入）
+        "planning_completed":  "✅ Your itinerary is ready — I've pushed the results to you.",
+        "planning_failed":     "❌ Itinerary planning failed. Please try again later.",
+
+        # 景點推薦
+        "yes": "yes",
+        "no": "no",
+
         # Location / trip
         "position_saved":      "Location saved, please select trip duration:",
         "storage_failed":      "Failed to save location",
-        "please_wait":         "👍I am preparing your trip. Please wait and use other functions first.",
+        "please_wait":         "👍 I am preparing your trip. Please wait and use other functions first.",
         "prep_in_progress":    "Your itinerary is still being prepared. Please wait and use other functions first.",
         "collect_info":        "⚠️ Please complete data collection first",
         "cannot_get_location": "Cannot get your location, please resend it",
@@ -185,12 +203,12 @@ TEXTS: dict[str, dict[str, object]] = {
         "ask_route_option":     "Please select your desired route",
         "system_route":         "System Route",
         "user_route":           "User Route",
-        "永續觀光": "Sustainable Tourism",
 
         # 價格顯示前綴
         "price_label":          "Price: ",
-        'view_map': ' view map',
-        'no_price_info': 'no price info',
+        "view_map": ' view map',
+        "no_price_info": 'no price info',
+
         # 價格對應表（Google price_level 0-4）
         "price_map": {
             0: "Free",
@@ -200,10 +218,10 @@ TEXTS: dict[str, dict[str, object]] = {
             4: "Very Expensive",
         },
 
-    "風景區": "Scenic Spots",
-    "餐廳":   "Restaurants",
-    "停車場": "Parking",
-    "住宿":   "Accommodation",
+        # Nearby keywords
+        "風景區": "Scenic Spots",
+        "餐廳":   "Restaurants",
+        "停車場": "Parking",
+        "住宿":   "Accommodation",
     }
-    
 }
