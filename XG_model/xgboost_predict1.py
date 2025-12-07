@@ -2,7 +2,7 @@ import xgboost as xgb
 import joblib
 import pandas as pd
 import numpy as np
-from config import MODEL_FILE, ENCODER_FILE, OUT_PUT
+from config import TAMSUI_MODEL_FILE, TAMSUI_ENCODER_FILE, OUT_PUT
 
 # ============================
 # 1. 載入模型與編碼器
@@ -10,8 +10,8 @@ from config import MODEL_FILE, ENCODER_FILE, OUT_PUT
 
 try:
     model = xgb.XGBRegressor()
-    model.load_model(MODEL_FILE)
-    encoders = joblib.load(ENCODER_FILE)
+    model.load_model(TAMSUI_MODEL_FILE)
+    encoders = joblib.load(TAMSUI_ENCODER_FILE)
     print("模型與編碼器載入成功！")
 except Exception as e:
     print(f"載入失敗，請先執行訓練程式 (Tamsui_model_train.py)。錯誤: {e}")
@@ -78,3 +78,4 @@ if __name__ == "__main__":
 
 
         print(f"\n✔ 預測結果已成功輸出到 CSV：{OUT_PUT}")
+
