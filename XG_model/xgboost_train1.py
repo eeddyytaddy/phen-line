@@ -6,7 +6,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 import joblib
 import numpy as np
 
-from config import CSV_FILE, MODEL_FILE, ENCODER_FILE
+from config import CSV_FILE, TAMSUI_MODEL_FILE, TAMSUI_ENCODER_FILE
 # ============================
 # 1. 設定與讀取資料
 # ============================
@@ -87,8 +87,8 @@ print(f"R2 Score (準確度): {r2:.4f}") # 因為您的數據是規律生成的�
 print("="*30)
 
 # 儲存模型
-MODEL.save_model(MODEL_FILE)
-print(f"模型已儲存至: {MODEL_FILE}")
+MODEL.save_model(TAMSUI_MODEL_FILE)
+print(f"模型已儲存至: {TAMSUI_MODEL_FILE}")
 
 # 儲存編碼器 (預測時需要用來解碼)
 encoders = {
@@ -96,6 +96,7 @@ encoders = {
     'Gender': le_gender,
     'Attraction': le_attraction
 }
-joblib.dump(encoders, ENCODER_FILE)
+joblib.dump(encoders, TAMSUI_ENCODER_FILE)
 
-print(f"編碼器已儲存至: {ENCODER_FILE}")
+print(f"編碼器已儲存至: {TAMSUI_ENCODER_FILE}")
+
