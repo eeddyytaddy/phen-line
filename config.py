@@ -19,6 +19,8 @@ from os import path
 # ──────────────────────────────────────────────────────────────
 BASE_PROJECT = path.dirname(path.abspath(__file__))
 
+TAMSUI_MODEL_DIR = path.join(BASE_PROJECT, "XG_model")
+
 # ──────────────────────────────────────────────────────────────
 # 2. 執行環境：local / docker（可用 APP_ENV 切換）
 # ──────────────────────────────────────────────────────────────
@@ -74,6 +76,8 @@ PLAN_3DAY             = path.join(BASE_CSV_PATH, "plan_3day.csv")
 PLAN_4DAY             = path.join(BASE_CSV_PATH, "plan_4day.csv")
 PLAN_5DAY             = path.join(BASE_CSV_PATH, "plan_5day.csv")
 LOCATION_FILE         = path.join(BASE_CSV_PATH, "location.csv")
+TAMSUI_CSV_FILE       = path.join(BASE_CSV_PATH, "Modified_Tamsui_Survey_Fixed_Scores.csv")
+OUT_PUT               = path.join(BASE_CSV_PATH, "Predicted_Result_Student_Male.csv")
 
 RECOMMEND_CSV         = path.join(BASE_CSV_PATH, "recommend.csv")
 HOTEL_DATA_CSV        = path.join(BASE_CSV_PATH, "hotel_data.csv")
@@ -105,5 +109,29 @@ NON_SUSTAINABLE_NON_MODEL_PATH  = path.join(MODEL_DIR, "non_sustainable_non_Attr
 MYSQL_USER      = os.getenv("MYSQL_USER", "root")
 MYSQL_PASSWORD  = os.getenv("MYSQL_PASSWORD", "nclab722")
 MYSQL_DATABASE  = os.getenv("MYSQL_DATABASE", "tamsui")
+
+# 9A. 資料欄位定義 (Data Column Definitions)
+COL_IDENTITY = 'Identity'
+COL_GENDER = 'Gender'
+COL_ATTRACTION_NAME = 'Attraction'
+COL_RATING = 'Rating'
+
+ATTRACTIONS = [
+    'Fort San Domingo',
+    'Tamsui Old Street',
+    'Tamshui Gold Seashore',
+    'Hobe Fort',
+    "Fisherman's Wharf",
+    'Shalun Beach'
+]
+
+# 9B. 模型參數 (Model Parameters)
+XGB_TAMSUI_PARAMS = { # 為了避免與澎湖模型或其他模型參數衝突，將其命名為 XGB_TAMSUI_PARAMS
+    'n_estimators': 100,
+    'learning_rate': 0.1,
+    'max_depth': 5,
+    'random_state': 42,
+    'objective': 'reg:squarederror'
+}
 
 # End of file
