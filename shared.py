@@ -9,6 +9,8 @@ import os
 from collections.abc import MutableMapping
 from typing import Any, Callable
 
+
+
 # 用於保護 SQLite 寫入的鎖
 _lock = threading.Lock()
 
@@ -84,3 +86,4 @@ user_preparing = SQLiteMap(_db_file, "user_preparing",  lambda: False)
 user_plan_ready= SQLiteMap(_db_file, "user_plan_ready", lambda: False)
 user_location  = SQLiteMap(_db_file, "user_location",   lambda: None)
 user_student   = SQLiteMap(_db_file, "user_student",    lambda: None)
+user_collecting = SQLiteMap(_db_file, "user_collecting", lambda: False)
