@@ -62,7 +62,7 @@ def predict_preference(identity_input, gender_input):
 # 3. 互動式測試
 # ============================
 if __name__ == "__main__":
-    identity_input = input("請輸入身份 (如 Student, Worker): ") 
+    identity_input = input("請輸入身份 (如 Student, Non-Student): ") 
     gender_input = input("請輸入性別 (如 Male, Female): ") 
 
     results = predict_preference(identity_input, gender_input)
@@ -78,4 +78,5 @@ if __name__ == "__main__":
 
 
         print(f"\n✔ 預測結果已成功輸出到 CSV：{OUT_PUT}")
+
 
