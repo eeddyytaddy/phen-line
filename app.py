@@ -490,6 +490,32 @@ def update_plan_csv_with_populartimes(plan_csv_file, user_id, crowd_source="hist
 
 # ---------- app.py  ※ Part 2 / 4  ----------------------------------
 # ---- 1) XGBoost 排序 (Machine Learning) ----
+def _get_identity_gender_for_tamsui(uid: str):
+    """
+    從 shared 拿使用者「是否為學生」與「中文性別」，
+    轉成淡水 XGBoost 模型需要的 Identity / Gender 字串。
+    """
+    # 1) 身分：根據你訓練資料 Identity 欄位使用的字
+    is_student = shared.user_student.get(uid)
+
+    if is_student is True:
+        identity = "Student"
+    elif is_student is False:
+        identity = "Non-Student"    # 如果你訓練資料不是用 Worker，請改成一樣的字
+    else:
+        identity = "Other"     # 沒回答就當 Other，避免丟 None 出去
+
+    # 2) 性別：把中文轉成英文（要跟訓練資料 Gender 欄位一致）
+    raw_gender = shared.user_gender.get(uid, "")
+    gender_map = {
+        "男": "Male",
+        "女": "Female",
+        "其他": "Other",
+    }
+    gender = gender_map.get(raw_gender, "Other")
+
+    return identity, gender
+
 
 def run_ml_sort(option, reply_token, user_id, df_plan):
     """
@@ -515,6 +541,80 @@ def run_filter(option, reply_token, user_id, csv_path, userID):
     根據需求過濾景點（例如距離、人潮…）
     """
     Filter.filter(csv_path, userID)
+
+def apply_tamsui_xgb_to_plan(user_id: str, plan_csv_path: str):
+    """
+    使用淡水 XGBoost (XGBOOST_predicted.predict_preference)
+    依 Identity + Gender 對景點預測評分，
+    然後把結果寫回行程 CSV 重新排序。
+
+    ⚠️ 不動學姊原本的 ML / Filter / ranking，只是在兩者中間多一層排序。
+    """
+    # 1) 從 shared 轉成模型需要的 Identity / Gender
+    identity, gender = _get_identity_gender_for_tamsui(user_id)
+
+    try:
+        # 2) 呼叫你提供的 predict_preference
+        #    （你 app.py 一開始已經有 import XGBOOST_predicted）
+        results = XGBOOST_predicted.predict_preference(identity, gender)
+    except Exception as e:
+        print(f"[tamsui_xgb] predict_preference 呼叫失敗: {e}")
+        return
+
+    # 3) 如果回傳的是錯誤訊息（字串），就直接跳過，不影響原本流程
+    if isinstance(results, str):
+        print(f"[tamsui_xgb] 預測失敗訊息: {results}")
+        return
+
+    # 期待 results 是一個 DataFrame，欄位：'景點 (Attraction)'、'預測評分 (Predicted Rating)'
+    if "景點 (Attraction)" not in results.columns:
+        print("[tamsui_xgb] 結果中沒有『景點 (Attraction)』欄位，略過淡水 XGB 排序")
+        return
+
+    ranked_attrs = results["景點 (Attraction)"].tolist()  # 由高到低排序好的景點名稱（英文）
+
+    # 4) 讀取目前的行程 CSV
+    try:
+        df = pd.read_csv(plan_csv_path, encoding="utf-8-sig")
+    except Exception as e:
+        print(f"[tamsui_xgb] 讀取 {plan_csv_path} 失敗: {e}")
+        return
+
+    # 5) 找一個欄位可以跟 XGBoost 的景點名稱對應
+    #   你可以依實際 CSV 欄位名微調。這裡做一個自動判斷：
+    candidate_cols = [
+        "Attraction",          # 如果你有英文景點欄
+        "景點 (Attraction)",   # 也可能你就是用這個欄名
+        "景點英文"             # 或其他你之後想用的欄名
+    ]
+    attr_col = None
+    for col in candidate_cols:
+        if col in df.columns:
+            attr_col = col
+            break
+
+    if not attr_col:
+        print(f"[tamsui_xgb] 在 {plan_csv_path} 找不到可以對應景點的欄位，略過淡水 XGB 排序")
+        return
+
+    # 6) 根據 XGBoost 給的 ranking 對 CSV 重新排序
+    def get_rank(name):
+        try:
+            return ranked_attrs.index(name)
+        except ValueError:
+            # 找不到的景點統一排在最後
+            return len(ranked_attrs)
+
+    df["tamsui_xgb_rank"] = df[attr_col].apply(get_rank)
+    df.sort_values(by="tamsui_xgb_rank", inplace=True)
+    df.drop(columns=["tamsui_xgb_rank"], inplace=True)
+
+    # 7) 寫回原本 CSV（覆寫）
+    try:
+        df.to_csv(plan_csv_path, index=False, encoding="utf-8-sig")
+        print(f"[tamsui_xgb] 已根據淡水 XGBoost 重新排序並寫回: {plan_csv_path}")
+    except Exception as e:
+        print(f"[tamsui_xgb] 寫回 {plan_csv_path} 失敗: {e}")
 
 
 # ---- 3) 景點重排名 (Attraction Ranking) ----
@@ -589,6 +689,15 @@ def process_travel_planning(option, reply_token, user_id):
         safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
         shared.user_preparing[user_id] = False
         return
+
+     # 淡水 XGBoost 偏好排序（新增步驟，不動原本程式）
+    try:
+        # 這裡假設 Filter.filter 的輸出行程 CSV 是寫到 PLAN_CSV
+        # 如果實際上是寫回 csv_path，就把 PLAN_CSV 改成 csv_path
+        apply_tamsui_xgb_to_plan(user_id, PLAN_CSV)
+    except Exception as e:
+        print(f"[tamsui_xgb] apply_tamsui_xgb_to_plan error: {e}")
+        # 不 return，讓原本 ranking / upload 照跑
 
     # 4. 重排名（加入即時人潮與距離）
     try:
