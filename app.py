@@ -1572,6 +1572,14 @@ def handle_free_command(uid, text, replyTK):
         "服務":     "service",
         "住宿":     "accommodation",
     }
+
+    best_tamsui_keys = {
+        "淡水個人推薦",
+        "淡水推薦景點",
+        "tamsui recommendation",
+        "tamsui best spot"
+    }
+    
     # 使用者輸入是否是我們的關鍵字（中文 or 英文）
     is_keyword = text in keyword_map or low in set(keyword_map.values())
 
@@ -1739,8 +1747,10 @@ def handle_free_command(uid, text, replyTK):
 
         return
 
-       
-
+    # 7.5) 淡水 XGBoost 個人化推薦
+    if low in best_tamsui_keys:
+        recommend_best_tamsui_spot(replyTK, uid)
+        return
         
 
     # 8) 租車資訊
