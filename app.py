@@ -1364,7 +1364,7 @@ def handle_gender(uid, text, replyTK):
 
     shared.user_gender[uid] = zh_text
     #shared.user_stage[uid]  = 'got_location'
-    safe_reply(replyTK, FlexMessage.ask_location(),uid)
+    #safe_reply(replyTK, FlexMessage.ask_location(),uid)
 
 
 @measure_time
