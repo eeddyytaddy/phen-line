@@ -1365,6 +1365,17 @@ def handle_gender(uid, text, replyTK):
         return
 
     shared.user_gender[uid] = zh_text
+    if shared.user_collecting.get(uid) == True:
+        shared.user_collecting[uid] = False   # 清除 flag
+        shared.user_stage[uid] = "ready"      # 返回主選單
+        reply_text = (
+            "感謝您的填寫！您的資料已成功更新。請使用其他功能 😊"
+            if _get_lang(uid) == "zh"
+            else "Thank you! Your information has been updated. Please continue using other features!"
+        )
+        safe_reply(replyTK, TextSendMessage(text=reply_text), uid)
+        return
+        
     shared.user_stage[uid]  = 'got_location'
     safe_reply(replyTK, FlexMessage.ask_location(),uid)
 
