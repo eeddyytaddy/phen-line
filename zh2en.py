@@ -95,7 +95,7 @@ TEXTS: dict[str, dict[str, object]] = {
         "prep_in_progress":    "行程還在準備中，請先使用其他功能",
         "collect_info":        "⚠️ 請先完成資料收集",
         "cannot_get_location": "無法取得您的位置，請重新傳送位置資訊",
-        "ask_location":        "請告訴系統您目前的位置",
+        "ask_location":        "謝謝您的填寫!您的資料已傳送至規劃旅程。請使用其他功能，祝您旅途愉快!",
 
         # 驗證
         "enter_valid_age":     "請輸入正確年紀",
@@ -162,7 +162,7 @@ TEXTS: dict[str, dict[str, object]] = {
         "ask_age":             "Are you a student?",
         "ask_gender":          "Please select your gender",
         "ask_days":            "Please choose trip duration",
-        "ask_location":        "Please tell the system your current location",
+        "ask_location":        "Thanks for your information!Your information have been sent to Travel planning. Please use other options.Wish you have a pleasant journey!",
         "send_location":       "Send Location",
         "ask_student_bottons": "Are you a student?",
 
