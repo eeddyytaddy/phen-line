@@ -80,7 +80,7 @@ from report_runtime import fetch_data
 from config import (
     MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
     PLAN_CSV, PLAN_2DAY, PLAN_3DAY, PLAN_4DAY, PLAN_5DAY,
-    LOCATION_FILE, RECOMMEND_CSV
+    LOCATION_FILE, RECOMMEND_CSV, OUT_PUT
 )
 import re
 import unicodedata
@@ -616,6 +616,76 @@ def apply_tamsui_xgb_to_plan(user_id: str, plan_csv_path: str):
     except Exception as e:
         print(f"[tamsui_xgb] 寫回 {plan_csv_path} 失敗: {e}")
 
+@measure_time
+def recommend_best_tamsui_spot(replyTK, uid):
+    """
+    直接使用淡水 XGBoost，根據使用者 Identity + Gender
+    算出對 6 個景點的預測評分：
+      1) 呼叫 XGBOOST_predicted.predict_preference
+      2) 輸出完整結果到 OUT_PUT CSV
+      3) 把最高分那一個景點名稱 + 網址推播給使用者
+    """
+    lang = _get_lang(uid)
+
+    # 1) 轉成模型需要的 Identity / Gender 字串
+    identity, gender = _get_identity_gender_for_tamsui(uid)
+
+    try:
+        results = XGBOOST_predicted.predict_preference(identity, gender)
+    except Exception as e:
+        print(f"[tamsui_best] predict_preference error: {e}")
+        safe_reply(replyTK, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
+        return
+
+    # 2) 如果回傳的是錯誤訊息（字串），直接回給使用者
+    if isinstance(results, str):
+        print(f"[tamsui_best] model message: {results}")
+        safe_reply(replyTK, TextSendMessage(text=results), uid)
+        return
+
+    # 3) 安全檢查欄位
+    if "景點 (Attraction)" not in results.columns or "預測評分 (Predicted Rating)" not in results.columns:
+        print("[tamsui_best] invalid result columns:", results.columns)
+        safe_reply(replyTK, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
+        return
+
+    # 4) 把結果輸出到 CSV（滿足你說的「結果 CSV」）
+    try:
+        results.to_csv(OUT_PUT, index=False, encoding="utf-8-sig")
+        print(f"[tamsui_best] results saved to {OUT_PUT}")
+    except Exception as e:
+        print(f"[tamsui_best] save csv failed: {e}")
+        # 就算存檔失敗，我們仍然可以用 DataFrame 本身繼續玩
+
+    # 5) 取最高分那一筆
+    top_row = results.iloc[0]
+    attr_en = str(top_row["景點 (Attraction)"])
+    score   = float(top_row["預測評分 (Predicted Rating)"])
+
+    # 6) 根據英文景點名稱找到中文名稱 + 網址
+    zh_name, url = TAMSUI_ATTR_INFO.get(attr_en, (attr_en, None))
+
+    # 7) 組訊息文字（中英雙語處理）
+    if lang == "zh":
+        title = f"根據您的身分與性別，最適合您的淡水景點是：{zh_name}"
+        detail = f"模型預測評分：{score:.2f}\n英文名稱：{attr_en}"
+        if url:
+            tail = f"\n\n詳細介紹請見：\n{url}"
+        else:
+            tail = ""
+        text = f"{title}\n{detail}{tail}"
+    else:
+        title = f"Based on your profile, the best-matched spot in Tamsui is: {attr_en}"
+        detail = f"Predicted rating: {score:.2f}\nChinese name: {zh_name}"
+        if url:
+            tail = f"\n\nMore info:\n{url}"
+        else:
+            tail = ""
+        text = f"{title}\n{detail}{tail}"
+
+    safe_reply(replyTK, TextSendMessage(text=text), uid)
+
+
 
 # ---- 3) 景點重排名 (Attraction Ranking) ----
 
@@ -788,6 +858,17 @@ PLACE_URLS = {
     "紅毛城":   "https://newtaipei.travel/zh-tw/attractions/detail/109672",
     "沙崙海灘": "https://egoldenyears.com/92435/",
 }
+
+# 🔗 XGBoost 英文景點名稱 → (中文名稱, 對應網址)
+TAMSUI_ATTR_INFO = {
+    "Fort San Domingo":      ("紅毛城",     PLACE_URLS["紅毛城"]),
+    "Tamsui Old Street":     ("淡水老街",   PLACE_URLS["淡水老街"]),
+    "Tamshui Gold Seashore": ("金色水岸",   PLACE_URLS["金色水岸"]),
+    "Hobe Fort":             ("滬尾砲台",   PLACE_URLS["滬尾砲台"]),
+    "Fisherman's Wharf":     ("漁人碼頭",   PLACE_URLS["漁人碼頭"]),
+    "Shalun Beach":          ("沙崙海灘",   PLACE_URLS["沙崙海灘"]),
+}
+
 # ✅ 代號對應表（1～6）
 PLACE_CODES = {
     "1": "淡水老街",
