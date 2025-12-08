@@ -1232,6 +1232,8 @@ def handle_ask_language(uid, replyTK):
     safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr), uid)
     # 原來是 got_language，改成 ask_language
     shared.user_stage[uid] = 'ask_language'
+    shared.user_collecting[uid] = True
+
 
 @measure_time
 def handle_language(uid, text, replyTK):
