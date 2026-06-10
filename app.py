@@ -1618,7 +1618,7 @@ def handle_free_command(uid, text, replyTK):
         return
 
     # 4) 景點推薦 → 詢問永續 vs 一般
-    if low in recommend_keys:
+    if _is_command(text, recommend_keys):
         yes_lbl     = _t("restaurant", _get_lang(uid))
         no_lbl      = _t("attraction",  _get_lang(uid))
         payload_yes = "餐廳" if _get_lang(uid) == 'zh' else "restaurant"
@@ -1632,6 +1632,7 @@ def handle_free_command(uid, text, replyTK):
         )
         safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", _get_lang(uid)), template=tpl), uid)
         return
+   
 
     # 5) 永續 or 一般景點推薦
     if low in sustainable_keys:
