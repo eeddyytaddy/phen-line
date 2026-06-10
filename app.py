@@ -175,6 +175,15 @@ def _get_lang(uid: str) -> str:
     """取得該 user 的語系設定"""
     return shared.user_language.get(uid, 'zh')
 
+def _norm(s: str) -> str:
+    """移除所有空白並轉小寫，容忍 rich menu 送出的空格差異。"""
+    return "".join((s or "").lower().split())
+
+def _is_command(text: str, keys) -> bool:
+    """正規化後做完全比對。"""
+    t = _norm(text)
+    return any(_norm(k) == t for k in keys)
+
 # ─────────────── LINE 安全封裝 ───────────────
 used_reply_tokens = set()
 
