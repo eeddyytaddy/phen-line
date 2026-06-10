@@ -1594,64 +1594,18 @@ def handle_free_command(uid, text, replyTK):
         send_crowd_analysis(replyTK, uid)
         return
 
-    # 3) 行程規劃
-    if low in plan_keys:
-        if preparing:
-            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", _get_lang(uid))), uid)
-        elif plan_ready:
-            safe_reply(replyTK, FlexMessage.ask_route_option(), uid)
-            # 推送詳細說明
-            if _get_lang(uid) == 'en':
-                desc1    = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
-                sys_label = _t("system_route", 'en')
-                desc_sys  = (
-                    f"【{sys_label}】\n"
-                    "1. Show full route (red line).\n"
-                    "2. Show segment by segment (blue line).\n"
-                    "3. Clear system route."
-                )
-                usr_label = _t("user_route", 'en')
-                desc_usr  = (
-                    f"【{usr_label}】\n"
-                    "1. Tap \"Add to route\" to include in list.\n"
-                    "2. Show all at once (green line).\n"
-                    "3. Show segment by segment (orange line).\n"
-                    "4. Clear user route."
-                )
-            else:
-                desc1    = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
-                sys_label = _t("system_route", 'zh')
-                desc_sys  = (
-                    f"【{sys_label}】依照人潮較少規劃\n"
-                    "1. 整段顯示完整路線（紅線）。\n"
-                    "2. 分段逐段顯示（藍線）。\n"
-                    "3. 清除系統路線。"
-                )
-                usr_label = _t("user_route", 'zh')
-                desc_usr  = (
-                    f"【{usr_label}】\n"
-                    "1. 點「加入路線」加入清單。\n"
-                    "2. 一次性顯示（綠線）。\n"
-                    "3. 分段逐段顯示（橘線）。\n"
-                    "4. 清除使用者路線。"
-                )
-            safe_push(uid, [
-                TextSendMessage(text=desc1),
-                TextSendMessage(text=desc_sys),
-                TextSendMessage(text=desc_usr),
-            ])
-        else:
-            if days:
-                shared.user_preparing[uid]  = True
-                shared.user_plan_ready[uid] = False
-                threading.Thread(
-                    target=_background_planning,
-                    args=(days, replyTK, uid),
-                    daemon=True
-                ).start()
-                safe_reply(replyTK, TextSendMessage(text=_t("please_wait", _get_lang(uid))), uid)
-            else:
-                safe_reply(replyTK, TextSendMessage(text=_t("collect_info", _get_lang(uid))), uid)
+    # 3) 行程規劃 → 直接推播行程規劃網站連結
+    if _is_command(text, plan_keys):
+        lang = _get_lang(uid)
+        head = (
+            "以下是您的淡水行程規劃網站：" if lang == "zh"
+            else "Here is your Tamsui trip planning website:"
+        )
+        url = "https://phen-line-547744493031.asia-east1.run.app/map_guide?type=trip"
+        safe_reply(replyTK, [
+            TextSendMessage(text=head),
+            TextSendMessage(text=url),
+        ], uid)
         return
 
     # 4) 景點推薦 → 詢問永續 vs 一般
@@ -1960,52 +1914,11 @@ def handle_message_event(ev, uid, lang, replyTK):
             if stage == "choose_attraction" and text in number_keys:
                 pass
             else:
-                # 行程規劃：若缺資料則引導補齊（原本程式不變）
-                if low in plan_keys:
-                    missing_field = None
-                    if shared.user_age.get(uid) is None:
-                        missing_field = 'age'
-                    elif shared.user_gender.get(uid) is None:
-                        missing_field = 'gender'
-                    elif shared.user_location.get(uid) is None:
-                        missing_field = 'location'
-                    elif shared.user_trip_days.get(uid) is None:
-                        missing_field = 'days'
-
-                    if missing_field:
-                        current_lang = _get_lang(uid)
-                        if missing_field == 'age':
-                            shared.user_stage[uid] = 'got_age'
-                            safe_reply(replyTK, TextSendMessage(text=_t("ask_age", current_lang)), uid)
-                        elif missing_field == 'gender':
-                            shared.user_stage[uid] = 'got_gender'
-                            handle_gender_buttons(uid, current_lang, replyTK)
-                        elif missing_field == 'location':
-                            shared.user_stage[uid] = 'got_location'
-                            safe_reply(replyTK, FlexMessage.ask_location(), uid)
-                        elif missing_field == 'days':
-                            shared.user_stage[uid] = 'got_days'
-                            days_options = ["兩天一夜", "三天兩夜", "四天三夜", "五天四夜"]
-                            qr_items = [
-                                QuickReplyButton(
-                                    action=MessageAction(
-                                        label=to_en(d) if current_lang == 'en' else d,
-                                        text = to_en(d) if current_lang == 'en' else d
-                                    )
-                                )
-                                for d in days_options
-                            ]
-                            safe_reply(
-                                replyTK,
-                                TextSendMessage(text=_t("ask_days", current_lang),
-                                                quick_reply=QuickReply(items=qr_items)),
-                                uid
-                            )
-                        return
-
-                # 其他自由指令／關鍵字
-                if (low in crowd_keys or low in rec_keys or low in sust_keys or 
-                    low in gen_keys or low in nearby_keys or low in rental_keys or is_keyword):
+                # 主選單指令統一交給 handle_free_command 處理（含行程規劃）
+                if (_is_command(text, plan_keys) or _is_command(text, crowd_keys)
+                        or _is_command(text, rec_keys) or _is_command(text, sust_keys)
+                        or _is_command(text, gen_keys) or _is_command(text, nearby_keys)
+                        or _is_command(text, rental_keys) or is_keyword):
                     handle_free_command(uid, text, replyTK)
                     return
 
