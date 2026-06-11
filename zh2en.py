@@ -25,8 +25,9 @@ ZH2EN: dict[str, str] = {
     "一般景點推薦": "General Recommendation",
     "景點人潮": "Crowd Analysis",
     "附近搜尋": "Nearby Search",
-    "租車": "Car Rental",
-    "景點": "Attractions",
+    "大眾運輸": "public transport",
+    "景點": "attraction",
+    "餐廳": "restaurant",
 
     # === Nearby-search keywords ===
     "風景區": "Scenic Spots",
@@ -40,8 +41,8 @@ ZH2EN: dict[str, str] = {
     "其他": "Other",
 
     # === Yes / No ===
-    "是": "Yes",
-    "否": "No",
+    "餐廳": "restaurant",
+    "景點": "attraction",
 
     # === Questionnaire / help ===
     "填寫問卷": "Fill Questionnaire",
@@ -82,9 +83,10 @@ TEXTS: dict[str, dict[str, object]] = {
         # 基本互動
         "ask_language":        "請選擇語言：『中文』或『英文』\nPlease select language: 'Chinese' or 'English'",
         "invalid_language":    "請輸入正確指令",
-        "ask_age":             "請輸入你的年紀",
+        "ask_age":             "你是否是學生?",
         "ask_gender":          "請選擇你的性別",
         "ask_days":            "請選擇旅行天數",
+        "ask_student_bottons": "你是否是學生?",
 
         # 位置與行程
         "position_saved":      "位置已儲存，請選擇預計旅行天數：",
@@ -93,7 +95,7 @@ TEXTS: dict[str, dict[str, object]] = {
         "prep_in_progress":    "行程還在準備中，請先使用其他功能",
         "collect_info":        "⚠️ 請先完成資料收集",
         "cannot_get_location": "無法取得您的位置，請重新傳送位置資訊",
-        "ask_location":        "請告訴系統您目前的位置",
+        "ask_location":        "謝謝您的填寫!您的資料已傳送至規劃旅程。請使用其他功能，祝您旅途愉快!",
 
         # 驗證
         "enter_valid_age":     "請輸入正確年紀",
@@ -109,8 +111,8 @@ TEXTS: dict[str, dict[str, object]] = {
         "planning_failed":     "❌ 行程規劃失敗，請稍後再試。",
 
         # 景點推薦
-        "yes": "是",
-        "no": "否",
+        "restaurant": "餐廳",
+        "attraction": "景點",
 
         # 數據/網路
         "data_fetch_failed":   "資料取得失敗，請稍後再試。",
@@ -122,14 +124,14 @@ TEXTS: dict[str, dict[str, object]] = {
         "system_recommend":     "系統推薦：",
         "crowd_top5":           "目前最擁擠前五景點",
         "sustainable_recommend":"永續觀光推薦：",
-        "ask_sustainable":      "是否推薦永續觀光景點？",
+        "ask_sustainable":      "請點選推薦項目",
 
         # 連結提示
         "ask_keyword":         "請選擇搜尋的關鍵字",
         "send_location":       "傳送位置",
         "crowd_analysis_link": "請點選以下網址查看人潮分析",
         "visit_spots_url":     "以下網址推薦附近景點：",
-        "visit_cars_url":      "以下網址推薦租車店家：",
+        "visit_cars_url":      "以下網址推薦公車動態",
 
         # 價格顯示前綴
         "price_label":         "價格：",
@@ -157,19 +159,20 @@ TEXTS: dict[str, dict[str, object]] = {
         # Basics
         "ask_language":        "請選擇語言：『中文』或『英文』\nPlease select language: 'Chinese' or 'English'",
         "invalid_language":    "Please enter the correct command",
-        "ask_age":             "Please enter your age",
+        "ask_age":             "Are you a student?",
         "ask_gender":          "Please select your gender",
         "ask_days":            "Please choose trip duration",
-        "ask_location":        "Please tell the system your current location",
+        "ask_location":        "Thanks for your information!Your information have been sent to Travel planning. Please use other options.Wish you have a pleasant journey!",
         "send_location":       "Send Location",
+        "ask_student_bottons": "Are you a student?",
 
         # 規劃結果通知（已加入）
         "planning_completed":  "✅ Your itinerary is ready.",
         "planning_failed":     "❌ Itinerary planning failed. Please try again later.",
 
         # 景點推薦
-        "yes": "yes",
-        "no": "no",
+        "restaurant": "restaurant",
+        "attraction": "attraction",
 
         # Location / trip
         "position_saved":      "Location saved, please select trip duration:",
@@ -193,11 +196,11 @@ TEXTS: dict[str, dict[str, object]] = {
         "system_recommend":     "System recommends: ",
         "crowd_top5":           "Current top 5 crowded spots",
         "sustainable_recommend":"Sustainable tourism recommendation: ",
-        "ask_sustainable":      "Recommend sustainable spots?",
+        "ask_sustainable":      "Please choose the recommend item",
         "ask_keyword":          "Please select the search keyword",
         "crowd_analysis_link":  "Click the link below for crowd analysis",
         "visit_spots_url":      "URL for nearby attractions:",
-        "visit_cars_url":       "URL for car rentals:",
+        "visit_cars_url":       "URL for public transport:",
 
         # Trip routing
         "ask_route_option":     "Please select your desired route",

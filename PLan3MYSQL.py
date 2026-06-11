@@ -21,21 +21,15 @@ def plan3mysql(file):
     # 新建 plan 表，加入 crowd_rank 欄位
     sql2 = '''
     CREATE TABLE `plan`(
-        `no` VARCHAR(50),
-        `Time` VARCHAR(50),
-        `POI` VARCHAR(50),
-        `UserID` VARCHAR(200),
-        `設置點` VARCHAR(50),
-        `緯度` VARCHAR(50),
-        `經度` VARCHAR(50),
-        `BPLUID` VARCHAR(50),
-        `age` VARCHAR(50),
-        `gender` VARCHAR(50),
-        `天氣` VARCHAR(50),
-        `place_id` VARCHAR(100),
-        `crowd` INT,
-        `distance`  DECIMAL(10, 2),
-        `crowd_rank` INT
+       id INT AUTO_INCREMENT PRIMARY KEY,
+        crowd_level INT COMMENT '人潮等級 1-5',
+        is_student INT COMMENT '1:學生, 0:非學生',
+        gender VARCHAR(10) COMMENT 'Male, Female, Other',
+        is_weekend INT COMMENT '1:假日, 0:平日',
+        is_festival INT COMMENT '1:節慶, 0:平日',
+        weather VARCHAR(20) COMMENT '天氣狀態',
+        temperature FLOAT COMMENT '氣溫',
+        preference FLOAT COMMENT '喜好程度 (Target)'
     );
     '''
     cursor.execute(sql2)

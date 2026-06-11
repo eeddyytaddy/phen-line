@@ -46,13 +46,28 @@ def ask_keyword():
     lang = _get_lang(uid)
 
     prompt   = _t('ask_keyword', lang)
-    hero_raw = "zh-tw.skyticket.com/guide/wp-content/uploads/2020/12/shutterstock_1086233933.jpg"
+    hero_raw = "https://images.chinatimes.com/newsphoto/2023-01-02/1024/B08A00_P_02_02.jpg"
     hero_url = sanitize_url(hero_raw)
 
-    # 中英對應的按鈕文字與回傳
-    def make_kw_button(chinese_key):
-        label = _t(chinese_key, lang)
-        text_payload = to_en(chinese_key) if lang == 'en' else chinese_key
+    # zh / en 對應表，要跟 app.py 裡的 keyword_map 保持一致
+    KW_LIST = [
+        ("服務",     "service"),
+        ("附近餐廳", "restaurants nearby"),
+        ("停車場",   "parking"),
+        ("住宿",     "accommodation"),
+    ]
+
+    def make_kw_button(zh, en):
+        if lang == "zh":
+            label = zh
+            text_payload = zh
+        else:
+            # 顯示比較好看的英文，但 payload 要跟 keyword_map 的 value 一樣 (小寫)
+            if en == "restaurants nearby":
+                label = "Nearby restaurant"
+            else:
+                label = en.capitalize()
+            text_payload = en    # 例如 "service", "restaurants nearby"
         return ButtonComponent(
             style='secondary', height='sm',
             action=MessageAction(label=label, text=text_payload)
@@ -72,12 +87,11 @@ def ask_keyword():
         footer=BoxComponent(
             layout='vertical', spacing='xs',
             contents=[
-                # 第一行
+                # 第一行：服務 / 附近餐廳
                 BoxComponent(
                     layout='horizontal', spacing='xs',
                     contents=[
-                        # 風景區
-                        BoxComponent(
+                        BoxComponent(  # 服務
                             layout='vertical', spacing='xs',
                             contents=[
                                 ImageComponent(
@@ -85,11 +99,10 @@ def ask_keyword():
                                     preview_image_url=sanitize_url("i.imgur.com/0H0JmYX.png"),
                                     aspect_ratio="1:1", aspect_mode="cover", size="md"
                                 ),
-                                make_kw_button('風景區')
+                                make_kw_button("服務", "service")
                             ]
                         ),
-                        # 餐廳
-                        BoxComponent(
+                        BoxComponent(  # 附近餐廳
                             layout='vertical', spacing='xs',
                             contents=[
                                 ImageComponent(
@@ -97,17 +110,16 @@ def ask_keyword():
                                     preview_image_url=sanitize_url("thumb.silhouette-ac.com/t/d8/d8a7e9674d55ca5fe9173b02cc4fb7dd_w.jpeg"),
                                     aspect_ratio="1:1", aspect_mode="cover", size="md"
                                 ),
-                                make_kw_button('餐廳')
+                                make_kw_button("附近餐廳", "restaurants nearby")
                             ]
                         ),
                     ]
                 ),
-                # 第二行
+                # 第二行：停車場 / 住宿
                 BoxComponent(
                     layout='horizontal', spacing='xs',
                     contents=[
-                        # 停車場
-                        BoxComponent(
+                        BoxComponent(  # 停車場
                             layout='vertical', spacing='xs',
                             contents=[
                                 ImageComponent(
@@ -115,11 +127,10 @@ def ask_keyword():
                                     preview_image_url=sanitize_url("th.bing.com/th/id/OIP.VgsoPsjpE4Pb9BRWjZ5tFwAAAA?pid=ImgDet&rs=1"),
                                     aspect_ratio="1:1", aspect_mode="cover", size="md"
                                 ),
-                                make_kw_button('停車場')
+                                make_kw_button("停車場", "parking")
                             ]
                         ),
-                        # 住宿
-                        BoxComponent(
+                        BoxComponent(  # 住宿
                             layout='vertical', spacing='xs',
                             contents=[
                                 ImageComponent(
@@ -127,7 +138,7 @@ def ask_keyword():
                                     preview_image_url=sanitize_url("png.pngtree.com/png-vector/20190623/ourlarge/pngtree-hotel-icon-png-image_1511479.jpg"),
                                     aspect_ratio="1:1", aspect_mode="cover", size="md"
                                 ),
-                                make_kw_button('住宿')
+                                make_kw_button("住宿", "accommodation")
                             ]
                         ),
                     ]
@@ -136,6 +147,7 @@ def ask_keyword():
         )
     )
     return FlexSendMessage(alt_text=prompt, contents=bubble)
+
 
 
 def Rating_Component(rating):

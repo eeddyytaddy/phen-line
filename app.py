@@ -11,9 +11,10 @@ threading._after_fork = lambda *args, **kwargs: None
 threading.Thread._stop   = lambda self: None
 from datetime import datetime as dt
 from random import randrange
+import random
 from collections import Counter
 from zh2en import TEXTS as I18N, to_en ,ZH2EN
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import (
     TextSendMessage, ImageSendMessage, StickerSendMessage,
@@ -79,7 +80,7 @@ from report_runtime import fetch_data
 from config import (
     MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
     PLAN_CSV, PLAN_2DAY, PLAN_3DAY, PLAN_4DAY, PLAN_5DAY,
-    LOCATION_FILE, RECOMMEND_CSV
+    LOCATION_FILE, RECOMMEND_CSV, OUT_PUT
 )
 import re
 import unicodedata
@@ -108,6 +109,36 @@ from resource_monitor import init_app
 load_dotenv()   # 這行會去根目錄找 .env，並把變數載入 os.environ
 # ─────────────── Flask App ───────────────
 app = Flask(__name__)
+# --- 應用程式路由定義 ---
+
+# 明確指定接受 GET 請求
+@app.route('/', methods=['GET'])
+def index():
+    """
+    處理首頁路由 (/)，並渲染 templates/index.html。
+    這裡可以傳遞動態資料到模板中。
+    """
+    # 範例動態資料：將環境變數傳遞給 HTML 模板
+    dynamic_data = {
+        'title': '探尋世界的角落',
+        'env': os.environ.get('APP_ENV', 'Local Development')
+    }
+    
+    # Flask 會自動在 'templates' 資料夾中尋找 index.html
+    return render_template('index.html', data=dynamic_data)
+
+@app.route('/healthz')
+def health_check():
+    """
+    健康檢查端點，供 Dockerfile 和 K8s 使用。
+    """
+    return "OK", 200
+
+# 只有在本地執行 (非 Gunicorn) 時才啟用
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8000))
+    # 運行在 0.0.0.0 確保容器內外部可訪問
+    app.run(host='0.0.0.0', port=port, debug=True)
 
 init_app(app, interval=5)   # 只需這一行
 metrics.init_metrics(app)  
@@ -143,6 +174,15 @@ def _t(key: str, lang: str) -> str:
 def _get_lang(uid: str) -> str:
     """取得該 user 的語系設定"""
     return shared.user_language.get(uid, 'zh')
+
+def _norm(s: str) -> str:
+    """移除所有空白並轉小寫，容忍 rich menu 送出的空格差異。"""
+    return "".join((s or "").lower().split())
+
+def _is_command(text: str, keys) -> bool:
+    """正規化後做完全比對。"""
+    t = _norm(text)
+    return any(_norm(k) == t for k in keys)
 
 # ─────────────── LINE 安全封裝 ───────────────
 used_reply_tokens = set()
@@ -459,6 +499,32 @@ def update_plan_csv_with_populartimes(plan_csv_file, user_id, crowd_source="hist
 
 # ---------- app.py  ※ Part 2 / 4  ----------------------------------
 # ---- 1) XGBoost 排序 (Machine Learning) ----
+def _get_identity_gender_for_tamsui(uid: str):
+    """
+    從 shared 拿使用者「是否為學生」與「中文性別」，
+    轉成淡水 XGBoost 模型需要的 Identity / Gender 字串。
+    """
+    # 1) 身分：根據你訓練資料 Identity 欄位使用的字
+    is_student = shared.user_student.get(uid)
+
+    if is_student is True:
+        identity = "Student"
+    elif is_student is False:
+        identity = "Non-Student"    # 如果你訓練資料不是用 Worker，請改成一樣的字
+    else:
+        identity = "Other"     # 沒回答就當 Other，避免丟 None 出去
+
+    # 2) 性別：把中文轉成英文（要跟訓練資料 Gender 欄位一致）
+    raw_gender = shared.user_gender.get(uid, "")
+    gender_map = {
+        "男": "Male",
+        "女": "Female",
+        "其他": "Other",
+    }
+    gender = gender_map.get(raw_gender, "Other")
+
+    return identity, gender
+
 
 def run_ml_sort(option, reply_token, user_id, df_plan):
     """
@@ -484,6 +550,150 @@ def run_filter(option, reply_token, user_id, csv_path, userID):
     根據需求過濾景點（例如距離、人潮…）
     """
     Filter.filter(csv_path, userID)
+
+def apply_tamsui_xgb_to_plan(user_id: str, plan_csv_path: str):
+    """
+    使用淡水 XGBoost (XGBOOST_predicted.predict_preference)
+    依 Identity + Gender 對景點預測評分，
+    然後把結果寫回行程 CSV 重新排序。
+
+    ⚠️ 不動學姊原本的 ML / Filter / ranking，只是在兩者中間多一層排序。
+    """
+    # 1) 從 shared 轉成模型需要的 Identity / Gender
+    identity, gender = _get_identity_gender_for_tamsui(user_id)
+
+    try:
+        # 2) 呼叫你提供的 predict_preference
+        #    （你 app.py 一開始已經有 import XGBOOST_predicted）
+        results = XGBOOST_predicted.predict_preference(identity, gender)
+    except Exception as e:
+        print(f"[tamsui_xgb] predict_preference 呼叫失敗: {e}")
+        return
+
+    # 3) 如果回傳的是錯誤訊息（字串），就直接跳過，不影響原本流程
+    if isinstance(results, str):
+        print(f"[tamsui_xgb] 預測失敗訊息: {results}")
+        return
+
+    # 期待 results 是一個 DataFrame，欄位：'景點 (Attraction)'、'預測評分 (Predicted Rating)'
+    if "景點 (Attraction)" not in results.columns:
+        print("[tamsui_xgb] 結果中沒有『景點 (Attraction)』欄位，略過淡水 XGB 排序")
+        return
+
+    ranked_attrs = results["景點 (Attraction)"].tolist()  # 由高到低排序好的景點名稱（英文）
+
+    # 4) 讀取目前的行程 CSV
+    try:
+        df = pd.read_csv(plan_csv_path, encoding="utf-8-sig")
+    except Exception as e:
+        print(f"[tamsui_xgb] 讀取 {plan_csv_path} 失敗: {e}")
+        return
+
+    # 5) 找一個欄位可以跟 XGBoost 的景點名稱對應
+    #   你可以依實際 CSV 欄位名微調。這裡做一個自動判斷：
+    candidate_cols = [
+        "Attraction",          # 如果你有英文景點欄
+        "景點 (Attraction)",   # 也可能你就是用這個欄名
+        "景點英文"             # 或其他你之後想用的欄名
+    ]
+    attr_col = None
+    for col in candidate_cols:
+        if col in df.columns:
+            attr_col = col
+            break
+
+    if not attr_col:
+        print(f"[tamsui_xgb] 在 {plan_csv_path} 找不到可以對應景點的欄位，略過淡水 XGB 排序")
+        return
+
+    # 6) 根據 XGBoost 給的 ranking 對 CSV 重新排序
+    def get_rank(name):
+        try:
+            return ranked_attrs.index(name)
+        except ValueError:
+            # 找不到的景點統一排在最後
+            return len(ranked_attrs)
+
+    df["tamsui_xgb_rank"] = df[attr_col].apply(get_rank)
+    df.sort_values(by="tamsui_xgb_rank", inplace=True)
+    df.drop(columns=["tamsui_xgb_rank"], inplace=True)
+
+    # 7) 寫回原本 CSV（覆寫）
+    try:
+        df.to_csv(plan_csv_path, index=False, encoding="utf-8-sig")
+        print(f"[tamsui_xgb] 已根據淡水 XGBoost 重新排序並寫回: {plan_csv_path}")
+    except Exception as e:
+        print(f"[tamsui_xgb] 寫回 {plan_csv_path} 失敗: {e}")
+
+@measure_time
+def recommend_best_tamsui_spot(replyTK, uid):
+    """
+    直接使用淡水 XGBoost，根據使用者 Identity + Gender
+    算出對 6 個景點的預測評分：
+      1) 呼叫 XGBOOST_predicted.predict_preference
+      2) 輸出完整結果到 OUT_PUT CSV
+      3) 把最高分那一個景點名稱 + 網址推播給使用者
+    """
+    lang = _get_lang(uid)
+
+    # 1) 轉成模型需要的 Identity / Gender 字串
+    identity, gender = _get_identity_gender_for_tamsui(uid)
+
+    try:
+        results = XGBOOST_predicted.predict_preference(identity, gender)
+    except Exception as e:
+        print(f"[tamsui_best] predict_preference error: {e}")
+        safe_reply(replyTK, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
+        return
+
+    # 2) 如果回傳的是錯誤訊息（字串），直接回給使用者
+    if isinstance(results, str):
+        print(f"[tamsui_best] model message: {results}")
+        safe_reply(replyTK, TextSendMessage(text=results), uid)
+        return
+
+    # 3) 安全檢查欄位
+    if "景點 (Attraction)" not in results.columns or "預測評分 (Predicted Rating)" not in results.columns:
+        print("[tamsui_best] invalid result columns:", results.columns)
+        safe_reply(replyTK, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
+        return
+
+    # 4) 把結果輸出到 CSV（滿足你說的「結果 CSV」）
+    try:
+        results.to_csv(OUT_PUT, index=False, encoding="utf-8-sig")
+        print(f"[tamsui_best] results saved to {OUT_PUT}")
+    except Exception as e:
+        print(f"[tamsui_best] save csv failed: {e}")
+        # 就算存檔失敗，我們仍然可以用 DataFrame 本身繼續玩
+
+    # 5) 取最高分那一筆
+    top_row = results.iloc[0]
+    attr_en = str(top_row["景點 (Attraction)"])
+    score   = float(top_row["預測評分 (Predicted Rating)"])
+
+    # 6) 根據英文景點名稱找到中文名稱 + 網址
+    zh_name, url = TAMSUI_ATTR_INFO.get(attr_en, (attr_en, None))
+
+    # 7) 組訊息文字（中英雙語處理）
+    if lang == "zh":
+        title = f"根據您的身分與性別，最適合您的淡水景點是：{zh_name}"
+        detail = f"模型預測評分：{score:.2f}\n英文名稱：{attr_en}"
+        if url:
+            tail = f"\n\n詳細介紹請見：\n{url}"
+        else:
+            tail = ""
+        text = f"{title}\n{detail}{tail}"
+    else:
+        title = f"Based on your profile, the best-matched spot in Tamsui is: {attr_en}"
+        detail = f"Predicted rating: {score:.2f}\nChinese name: {zh_name}"
+        if url:
+            tail = f"\n\nMore info:\n{url}"
+        else:
+            tail = ""
+        text = f"{title}\n{detail}{tail}"
+
+    safe_reply(replyTK, TextSendMessage(text=text), uid)
+
 
 
 # ---- 3) 景點重排名 (Attraction Ranking) ----
@@ -558,6 +768,15 @@ def process_travel_planning(option, reply_token, user_id):
         safe_push(user_id, TextSendMessage(text=_t('data_fetch_failed', lang)))
         shared.user_preparing[user_id] = False
         return
+
+     # 淡水 XGBoost 偏好排序（新增步驟，不動原本程式）
+    try:
+        # 這裡假設 Filter.filter 的輸出行程 CSV 是寫到 PLAN_CSV
+        # 如果實際上是寫回 csv_path，就把 PLAN_CSV 改成 csv_path
+        apply_tamsui_xgb_to_plan(user_id, PLAN_CSV)
+    except Exception as e:
+        print(f"[tamsui_xgb] apply_tamsui_xgb_to_plan error: {e}")
+        # 不 return，讓原本 ranking / upload 照跑
 
     # 4. 重排名（加入即時人潮與距離）
     try:
@@ -636,8 +855,85 @@ def send_questionnaire(tk,uid):
 @measure_time
 def send_crowd_analysis(tk,uid):
     safe_reply(tk, [
-        TextSendMessage("https://how-many-people.eeddyytaddy.workers.dev")
+        TextSendMessage("https://phen-line-547744493031.asia-east1.run.app/")
     ],uid)
+
+# 固定的餐廳/景點清單（我要的 6 個點）
+PLACE_URLS = {
+    "淡水老街": "https://newtaipei.travel/en/attractions/detail/111451",
+    "漁人碼頭": "https://newtaipei.travel/zh-tw/attractions/detail/109659",
+    "金色水岸": "https://newtaipei.travel/zh-tw/attractions/detail/209657",
+    "滬尾砲台": "https://newtaipei.travel/zh-tw/attractions/detail/110398",
+    "紅毛城":   "https://newtaipei.travel/zh-tw/attractions/detail/109672",
+    "沙崙海灘": "https://egoldenyears.com/92435/",
+}
+
+# 🔗 XGBoost 英文景點名稱 → (中文名稱, 對應網址)
+TAMSUI_ATTR_INFO = {
+    "Fort San Domingo":      ("紅毛城",     PLACE_URLS["紅毛城"]),
+    "Tamsui Old Street":     ("淡水老街",   PLACE_URLS["淡水老街"]),
+    "Tamshui Gold Seashore": ("金色水岸",   PLACE_URLS["金色水岸"]),
+    "Hobe Fort":             ("滬尾砲台",   PLACE_URLS["滬尾砲台"]),
+    "Fisherman's Wharf":     ("漁人碼頭",   PLACE_URLS["漁人碼頭"]),
+    "Shalun Beach":          ("沙崙海灘",   PLACE_URLS["沙崙海灘"]),
+}
+
+# ✅ 代號對應表（1～6）
+PLACE_CODES = {
+    "1": "淡水老街",
+    "2": "漁人碼頭",
+    "3": "金色水岸",
+    "4": "滬尾砲台",
+    "5": "紅毛城",
+    "6": "沙崙海灘",
+}
+# 🔹固定的餐廳網址（我提供的 18 個）
+RESTAURANT_URLS = [
+    "https://maps.app.goo.gl/vixH7xDGPFE2oCsR7?g_st=ipc",
+    "https://maps.app.goo.gl/d4hbj6oyGbRm8kLw5?g_st=ipc",
+    "https://maps.app.goo.gl/rzt2zBBVP5451rKK9?g_st=ipc",
+    "https://maps.app.goo.gl/mLdSMS16V7htFrFC9?g_st=ipc",
+    "https://maps.app.goo.gl/1bWfr7zMXSvwF11s8?g_st=ipc",
+    "https://maps.app.goo.gl/kr9CHWTNtC32pSLK8?g_st=ipc",
+    "https://maps.app.goo.gl/mUKZjW3zBVn4iZqz6?g_st=ipc",
+    "https://maps.app.goo.gl/rzt2zBBVP5451rKK9?g_st=ipc",  # 這個跟上面重複，看你要不要刪掉
+    "https://maps.app.goo.gl/WZH1vy2K6bQ5sJT96?g_st=ipc",
+    "https://maps.app.goo.gl/JYitYJrFXjcqaHqK9?g_st=ipc",
+    "https://maps.app.goo.gl/3A9xUnWKdGxdWTuE8?g_st=ipc",
+    "https://maps.app.goo.gl/xTfMLFTujsqKXUK38?g_st=ipc",
+    "https://maps.app.goo.gl/ZHV5Mnxq8ZFNjGyVA?g_st=ipc",
+    "https://maps.app.goo.gl/zLgdtzsj7Rp1ZfSZA?g_st=ipc",
+    "https://maps.app.goo.gl/SeAXF5MXAcVgbf8o7?g_st=ipc",
+    "https://maps.app.goo.gl/oFA4hURpZ2CNpZgV7?g_st=ipc",
+    "https://maps.app.goo.gl/YhSXEkBhw9M7tEPL6?g_st=ipc",
+    
+]
+
+@measure_time
+def recommend_restaurants(tk, uid):
+    """
+    使用者在「景點推薦」底下選『餐廳』時，
+    從 RESTAURANT_URLS 隨機抽 1 個網址推播出去。
+    """
+    lang = _get_lang(uid)
+
+    # 標題文字
+    head = (
+        "以下是為您隨機推薦的一間淡水餐廳：" if lang == "zh"
+        else "Here is a randomly selected restaurant in Tamsui:"
+    )
+
+    # 從清單中隨機抽 1 個網址
+    url = random.choice(RESTAURANT_URLS)
+
+    # 組成兩則訊息：說明 + 連結
+    msgs = [
+        TextSendMessage(text=head),
+        TextSendMessage(text=url),
+    ]
+
+    safe_reply(tk, msgs, uid)
+
 
 
 @measure_time
@@ -645,49 +941,233 @@ def recommend_general_places(tk, uid):
     """
     一般景點推薦：加入性別轉換後的模型呼叫
     """
-    lang = _get_lang(uid)
-    try:
-        # 1) 人潮前五
-        dont_go, _ = people_high5(tk,uid)
 
-        # 2) 天氣、溫度、潮汐
+  
+    # 確保 lang 在 try 區塊外初始化，以便在 except 區塊中使用
+    lang = _get_lang(uid)
+    
+    try:
+        # 5) 產生 Flex Message
+        
+        # 1. 定義 6 個固定網址
+        urls = [
+            "https://newtaipei.travel/zh-tw/attractions/detail/109658"
+        ]
+
+        # 2. 設定標題
+        head = "以下是為您推薦的淡水景點：" if lang == "zh" else "Here are the recommended attractions in Tamsui:"
+
+        # 3. 產生訊息列表
+        msgs = [TextSendMessage(text=head)] + [
+            TextSendMessage(text=url) for url in urls
+        ]
+
+        # 4. 傳送訊息
+        safe_reply(tk, msgs, uid)
+        
+    except Exception as e:
+        # 保留錯誤處理，防止服務崩潰
+        print("❌ recommend_general_places error:", e)
+        # 假設 _t 和 TextSendMessage 已經被導入
+        safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)), uid)
+
+@measure_time
+def send_attraction_menu(tk, uid):
+    """
+    使用者選「景點」時，先列出可選的景點，請他輸入名稱
+    """
+    lang = _get_lang(uid)
+
+    if lang == "zh":
+        lines = [
+            "以下是可選擇的淡水景點：",
+            "",
+            "1. 淡水老街",
+            "2. 漁人碼頭",
+            "3. 金色水岸",
+            "4. 滬尾砲台",
+            "5. 紅毛城",
+            "6. 沙崙海灘",
+            "",
+            "請輸入想去景點的代號或名稱，例如：1或是淡水老街"
+        ]
+    else:
+        lines = [
+            "Here are the attractions in Tamsui:",
+            "",
+            "1. Tamsui Old Street",
+            "2. Fisherman’s Wharf",
+            "3. Golden Riverside",
+            "4. Huwei Fort",
+            "5. Fort San Domingo",
+            "6. Shalun Beach",
+            "",
+            "Please type the number or the name of the attraction, e.g. 1 or Tamsui Old Street"
+        ]
+
+    msg = "\n".join(lines)
+    safe_reply(tk, TextSendMessage(text=msg), uid)
+
+    # 下一句文字就當成「選擇哪個景點」
+    shared.user_stage[uid] = "choose_attraction"
+    
+@measure_time
+def handle_attraction_choice(uid, text, replyTK):
+    """
+    當 stage == 'choose_attraction' 時，使用者輸入的文字會到這裡
+    支援：
+      - 中文全名：淡水老街
+      - 英文全名：Tamsui Old Street
+      - 代號：1～6
+    """
+    lang = _get_lang(uid)
+    name_raw = text.strip()
+
+    # ---- 0. 先試著把輸入當「代號」處理（1～6） ----
+    # 允許使用者輸入「1」、「1.」、「1、」這種形式
+    code = "".join(ch for ch in name_raw if ch.isdigit())
+    if code in PLACE_CODES:
+        zh_name = PLACE_CODES[code]                # 先取得中文名稱
+        url = PLACE_URLS.get(zh_name)
+
+        if url:
+            # 顯示給使用者看的名稱：中文介面用中文，英文介面轉英文
+            display_name = to_en(zh_name) if lang == "en" else zh_name
+
+            if lang == "zh":
+                reply_text = f"這是「{display_name}」的連結：\n{url}"
+            else:
+                reply_text = f"Here is the link for {display_name}:\n{url}"
+
+            safe_reply(replyTK, TextSendMessage(text=reply_text), uid)
+            # ❗ 不改 stage，維持在 choose_attraction，讓他可以繼續輸入下一個
+            return
+        # 如果照理說不會發生，還是讓它往下走用舊邏輯
+
+    # ---- 1. 英文輸入轉成中文 key ----
+    lower = name_raw.lower()
+    EN2ZH = {
+        "tamsui old street":   "淡水老街",
+        "fisherman’s wharf":   "漁人碼頭",
+        "fisherman's wharf":   "漁人碼頭",
+        "golden riverside":    "金色水岸",
+        "huwei fort":          "滬尾砲台",
+        "fort san domingo":    "紅毛城",
+        "shalun beach":        "沙崙海灘",
+    }
+
+    if lang == "en":
+        key = EN2ZH.get(lower, name_raw)   # 找不到就用原字串當 key
+    else:
+        key = name_raw                     # 中文直接用原本輸入
+
+    # ---- 2. 用「中文 key」去查 PLACE_URLS ----
+    url = PLACE_URLS.get(key)
+
+    if url:
+        if lang == "zh":
+            reply_text = f"這是「{key}」的連結：\n{url}"
+        else:
+            # 英文時顯示原本輸入的英文名稱比較自然
+            reply_text = f"Here is the link for {name_raw}:\n{url}"
+
+        safe_reply(replyTK, TextSendMessage(text=reply_text), uid)
+        # ✅ 不把 stage 改回 ready，這樣可以連續查多個景點
+        # shared.user_stage[uid] = "ready"
+    else:
+        if lang == "zh":
+            reply_text = "抱歉，我找不到這個景點，請確認名稱再輸入一次（例如：淡水老街 或 1）"
+        else:
+            reply_text = "Sorry, I can't find this attraction. Please type the exact name or its number (e.g. 1)."
+
+        safe_reply(replyTK, TextSendMessage(text=reply_text), uid)
+        # 保持在 choose_attraction，等使用者再輸入一次
+
+
+
+@measure_time
+def recommend_sustainable_places(tk, uid):
+    """
+    永續觀光推薦（含性別／年齡轉換）
+    1. 取得人潮 Top-5 → 避免推薦
+    2. 讀天氣／溫度／潮汐並做標籤映射
+    3. 依性別‧年齡跑 XGBoost 推薦
+    4. 取景點資料，回傳「說明文字 ＋ 圖片」
+    """
+    lang = _get_lang(uid)
+
+    try:
+        # ---------- 1) 人潮 ----------
+        dont_go, crowd_msg = people_high5(tk,uid)
+
+        # ---------- 2) 天氣 ----------
         try:
             raw_weather = Now_weather.weather()
-            w_str = raw_weather
-        except:
-            w_str = "晴"
+        except Exception:
+            raw_weather = "晴"
+
+        weather_map = {
+            '晴':  '晴',  '多雲': '多雲', '陰': '陰',
+            '小雨': '下雨', '中雨': '下雨', '大雨': '下雨', '雷陣雨': '下雨'
+        }
+        w_str = weather_map.get(raw_weather, '晴')
+
+        # ---------- 3) 溫度‧潮汐 ----------
         try:
-            t = float(Now_weather.temperature())
-        except:
-            t = 25.0
+            temp_c = float(Now_weather.temperature() or 25.0)
+        except Exception:
+            temp_c = 25.0
         try:
-            tide = float(Now_weather.tidal())
-        except:
-            tide = 0.0
+            tide   = float(Now_weather.tidal() or 0.0)
+        except Exception:
+            tide   = 0.0
 
-        # 3) 性別 & 年齡轉換
-        raw_gender = shared.user_gender.get(uid, "")
-        gender_code = FlexMessage.classify_gender(raw_gender)
-        age = shared.user_age.get(uid, 30)
+        # ---------- 4) 使用者資料 ----------
+        raw_gender  = shared.user_gender.get(uid, "")
+        gender_code = FlexMessage.classify_gender(raw_gender)   # 0/1/2
+        age         = shared.user_age.get(uid, 30)
 
-        # 4) 模型推薦
-        rec = XGBOOST_predicted.XGboost_recommend2(
-            np.array([w_str]), gender_code, age, tide, t, dont_go
-        )
+        # ---------- 5) XGBoost 推薦 ----------
+        try:
+            rec = ML.XGboost_recommend3(
+                np.array([w_str]), gender_code, age, tide, temp_c, dont_go
+            )
+        except ValueError as e:          # 若出現 unseen label
+            print("XGBoost fallback:", e)
+            rec = ML.XGboost_recommend3(
+                np.array(['晴']), gender_code, age, tide, temp_c, dont_go
+            )
 
-        # 5) 產生 Flex Message
-        website, img, maplink = PH_Attractions.Attractions_recommend(rec)
+        # 如果結果還落在「不建議前往」名單，就再跑一次
+        if rec in dont_go:
+            rec = ML.XGboost_recommend3(
+                np.array([w_str]), gender_code, age, tide, temp_c, dont_go
+            )
 
-        msgs = [
-            TextSendMessage(text=_t("system_recommend", lang)),
-            TextSendMessage(text=rec),
-            ImageSendMessage(original_content_url=f"{img}.jpg", preview_image_url=f"{img}.jpg"),
-            TextSendMessage(text=website),
-            TextSendMessage(text=maplink)
-        ]
-        safe_reply(tk, msgs,uid)
+        # ---------- 6) 取景點資訊 ----------
+        web, img, maplink = PH_Attractions.Attractions_recommend1(rec)
+
+        # Robust 圖片 URL
+        if img.startswith(("http://", "https://")):
+            img_url = img
+        elif "imgur.com" in img:         # 轉 i.imgur.com 直連
+            _id = img.rstrip("/").split("/")[-1]
+            img_url = f"https://i.imgur.com/{_id}.jpg"
+        else:
+            img_url = f"https://{img.lstrip('/')}.jpg"
+
+        # ---------- 7) 組訊息並送出 ----------
+        #header = f"📊 {crowd_msg}"
+        title  = to_en('永續觀光') if lang == 'en' else '永續觀光'
+        body   = f"{title}：{rec}\n{web}\n{maplink}"
+
+        safe_reply(tk, [
+            TextSendMessage(text=body),
+            
+        ],uid)
+
     except Exception as e:
-        print("❌ recommend_general_places error:", e)
+        print("❌ recommend_sustainable_places error:", e)
         safe_reply(tk, TextSendMessage(text=_t('data_fetch_failed', lang)),uid)
 
 
@@ -822,7 +1302,7 @@ def send_rental_car(reply_token, uid):
     prompt = _t("visit_cars_url", lang)
 
     # 3. 固定的租車 URL
-    url = "https://penghu-car-rental-agency.eeddyytaddy.workers.dev"
+    url = "https://pda5284.gov.taipei/MQS/stoplocation.jsp?slid=3845"
 
     # 4. 回覆兩則訊息：提示文字 + 連結
     safe_reply(reply_token, [
@@ -842,6 +1322,8 @@ def handle_ask_language(uid, replyTK):
     safe_reply(replyTK, TextSendMessage(text=prompt, quick_reply=qr), uid)
     # 原來是 got_language，改成 ask_language
     shared.user_stage[uid] = 'ask_language'
+    shared.user_collecting[uid] = True
+
 
 @measure_time
 def handle_language(uid, text, replyTK):
@@ -854,11 +1336,71 @@ def handle_language(uid, text, replyTK):
         safe_reply(replyTK, TextSendMessage(text=_t("invalid_language", _get_lang(uid))),uid)
         return
 
-    shared.user_stage[uid] = 'got_age'
-    safe_reply(replyTK, TextSendMessage(text=_t("ask_age", _get_lang(uid))),uid)
+    ask_student_buttons(uid, replyTK)
 
 # 在 app.py 中新增，放在 handle_language、handle_gender_buttons 之後，handle_message_event 之前
 @measure_time
+def ask_student_buttons(uid, replyTK):
+    """
+    第二步：問使用者「你是否為學生？」（是 / 否 按鈕）
+    """
+    lang = _get_lang(uid)
+
+    question = "你是否為學生？" if lang == "zh" else "Are you a student?"
+
+    # 按鈕的文字與回傳文字一樣（中文：是/否；英文：Yes/No）
+    yes_label = "是" if lang == "zh" else "Yes"
+    no_label  = "否" if lang == "zh" else "No"
+
+    actions = [
+        MessageAction(label=yes_label, text=yes_label),
+        MessageAction(label=no_label,  text=no_label),
+    ]
+
+    tpl = ButtonsTemplate(text=question, actions=actions)
+    safe_reply(
+        replyTK,
+        TemplateSendMessage(alt_text=question, template=tpl),
+        uid
+    )
+    # 更新階段
+    shared.user_stage[uid] = "ask_student"
+
+
+@measure_time
+def handle_student(uid, text, replyTK):
+    """
+    處理「是否為學生？」的回答（stage='ask_student'）
+    回覆必須是：中文：是/否；英文：Yes/No
+    """
+    lang = _get_lang(uid)
+    low  = text.lower()
+
+    is_student = None
+    if lang == "zh":
+        if text == "是":
+            is_student = True
+        elif text == "否":
+            is_student = False
+    else:
+        if low == "yes":
+            is_student = True
+        elif low == "no":
+            is_student = False
+
+    if is_student is None:
+        # 使用者沒有按按鈕，而是亂打字
+        msg = "請點選「是」或「否」" if lang == "zh" else 'Please tap "Yes" or "No".'
+        safe_reply(replyTK, TextSendMessage(text=msg), uid)
+        return
+
+    # ✅ 把是否為學生記起來（你要在 shared.py 補上一行：user_student = {}）
+    shared.user_student[uid] = is_student
+
+    # 下一步：跟原本一樣，進到「選擇性別」按鈕
+    handle_gender_buttons(uid, lang, replyTK)
+
+
 def handle_age(uid, text, replyTK):
     """
     處理使用者輸入的年齡 (stage='got_age')：
@@ -913,6 +1455,17 @@ def handle_gender(uid, text, replyTK):
         return
 
     shared.user_gender[uid] = zh_text
+    if shared.user_collecting.get(uid) == True:
+        shared.user_collecting[uid] = False   # 清除 flag
+        shared.user_stage[uid] = "ready"      # 返回主選單
+        reply_text = (
+            "感謝您的填寫！您的資料已成功更新。請使用其他功能 😊"
+            if _get_lang(uid) == "zh"
+            else "Thank you! Your information has been updated. Please continue using other features!"
+        )
+        safe_reply(replyTK, TextSendMessage(text=reply_text), uid)
+        return
+        
     shared.user_stage[uid]  = 'got_location'
     safe_reply(replyTK, FlexMessage.ask_location(),uid)
 
@@ -1000,6 +1553,8 @@ def handle_free_command(uid, text, replyTK):
         QuickReply, QuickReplyButton, MessageAction, StickerSendMessage
     )
     import threading
+    if shared.user_stage.get(uid) != 'ready':
+        shared.user_stage[uid] = 'ready'
 
     low = text.lower()
 
@@ -1010,17 +1565,33 @@ def handle_free_command(uid, text, replyTK):
     days_label = to_en(days) if _get_lang(uid) == 'en' and days else days
 
     # 指令集合
-    recollect_keys   = {"收集資料", "data collection", "collect data", "1"}
-    crowd_keys       = {"景點人潮", "景點人潮(crowd analyzer)", "crowd analyzer", "crowd analysis", "crowd info", "3"}
-    plan_keys        = {"行程規劃", "行程規劃(itinerary planning)", "itinerary planning", "plan itinerary", "6"}
-    recommend_keys   = {"景點推薦", "景點推薦(attraction recommendation)", "attraction recommendation", "recommend spot", "2"}
-    sustainable_keys = {"永續觀光", "永續觀光(sustainable tourism)", "sustainable tourism", "2-1"}
-    general_keys     = {"一般景點推薦", "一般景點推薦(general recommendation)", "general recommendation", "2-2"}
-    nearby_keys      = {"附近搜尋", "附近搜尋(nearby search)", "nearby search", "4"}
-    rental_keys      = {"租車", "租車(car rental information)", "car rental information", "car rental", "5"}
+    recollect_keys   = {"收集資料", "data collection", "collect data"}
+    crowd_keys       = {"景點人潮", "景點人潮(crowd analyzer)", "crowd analyzer", "crowd analysis", "crowd info"}
+    plan_keys        = {"行程規劃", "行程規劃(itinerary planning)", "itinerary planning", "plan itinerary"}
+    recommend_keys   = {"景點推薦", "景點推薦(attraction recommendation)", "attraction recommendation", "recommend spot"}
+    sustainable_keys = {"餐廳", "餐廳(restaurant)", "restaurant", "2-1"}
+    general_keys     = {"景點", "景點(attraction)", "attraction", "2-2"}
+    nearby_keys      = {"附近搜尋", "附近搜尋(nearby search)", "nearby search"}
+    rental_keys      = {"租車", "租車(car rental)", "car rental information", "car rental", "大眾運輸", "public transport", "大眾運輸(public transport)"}
     update_loc_keys  = {"更新位置", "update location", "set location"}   # ← 新增
-    keyword_map      = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
-    is_keyword       = text in keyword_map or low in set(keyword_map.values())
+        # ---- 關鍵字對應（中英都吃）----
+    keyword_map = {
+        "附近餐廳": "restaurants nearby",
+        "停車場":   "parking",
+        "服務":     "service",
+        "住宿":     "accommodation",
+    }
+
+    best_tamsui_keys = {
+        "淡水個人推薦",
+        "淡水推薦景點",
+        "tamsui recommendation",
+        "tamsui best spot"
+    }
+    
+    # 使用者輸入是否是我們的關鍵字（中文 or 英文）
+    is_keyword = text in keyword_map or low in set(keyword_map.values())
+
 
     # 1) 重新收集資料
     if low in recollect_keys:
@@ -1032,72 +1603,26 @@ def handle_free_command(uid, text, replyTK):
         send_crowd_analysis(replyTK, uid)
         return
 
-    # 3) 行程規劃
-    if low in plan_keys:
-        if preparing:
-            safe_reply(replyTK, TextSendMessage(text=_t("prep_in_progress", _get_lang(uid))), uid)
-        elif plan_ready:
-            safe_reply(replyTK, FlexMessage.ask_route_option(), uid)
-            # 推送詳細說明
-            if _get_lang(uid) == 'en':
-                desc1    = f"Using machine learning based on relevance, we found the best {days_label} itinerary for you"
-                sys_label = _t("system_route", 'en')
-                desc_sys  = (
-                    f"【{sys_label}】\n"
-                    "1. Show full route (red line).\n"
-                    "2. Show segment by segment (blue line).\n"
-                    "3. Clear system route."
-                )
-                usr_label = _t("user_route", 'en')
-                desc_usr  = (
-                    f"【{usr_label}】\n"
-                    "1. Tap \"Add to route\" to include in list.\n"
-                    "2. Show all at once (green line).\n"
-                    "3. Show segment by segment (orange line).\n"
-                    "4. Clear user route."
-                )
-            else:
-                desc1    = f"以機器學習依據相關性，找尋過往數據最適合您的{days_label}行程"
-                sys_label = _t("system_route", 'zh')
-                desc_sys  = (
-                    f"【{sys_label}】依照人潮較少規劃\n"
-                    "1. 整段顯示完整路線（紅線）。\n"
-                    "2. 分段逐段顯示（藍線）。\n"
-                    "3. 清除系統路線。"
-                )
-                usr_label = _t("user_route", 'zh')
-                desc_usr  = (
-                    f"【{usr_label}】\n"
-                    "1. 點「加入路線」加入清單。\n"
-                    "2. 一次性顯示（綠線）。\n"
-                    "3. 分段逐段顯示（橘線）。\n"
-                    "4. 清除使用者路線。"
-                )
-            safe_push(uid, [
-                TextSendMessage(text=desc1),
-                TextSendMessage(text=desc_sys),
-                TextSendMessage(text=desc_usr),
-            ])
-        else:
-            if days:
-                shared.user_preparing[uid]  = True
-                shared.user_plan_ready[uid] = False
-                threading.Thread(
-                    target=_background_planning,
-                    args=(days, replyTK, uid),
-                    daemon=True
-                ).start()
-                safe_reply(replyTK, TextSendMessage(text=_t("please_wait", _get_lang(uid))), uid)
-            else:
-                safe_reply(replyTK, TextSendMessage(text=_t("collect_info", _get_lang(uid))), uid)
+    # 3) 行程規劃 → 直接推播行程規劃網站連結
+    if _is_command(text, plan_keys):
+        lang = _get_lang(uid)
+        head = (
+            "以下是您的淡水行程規劃網站：" if lang == "zh"
+            else "Here is your Tamsui trip planning website:"
+        )
+        url = "https://phen-line-547744493031.asia-east1.run.app/map_guide?type=trip"
+        safe_reply(replyTK, [
+            TextSendMessage(text=head),
+            TextSendMessage(text=url),
+        ], uid)
         return
 
     # 4) 景點推薦 → 詢問永續 vs 一般
-    if low in recommend_keys:
-        yes_lbl     = _t("yes", _get_lang(uid))
-        no_lbl      = _t("no",  _get_lang(uid))
-        payload_yes = "永續觀光" if _get_lang(uid) == 'zh' else "sustainable tourism"
-        payload_no  = "一般景點推薦" if _get_lang(uid) == 'zh' else "general recommendation"
+    if _is_command(text, recommend_keys):
+        yes_lbl     = _t("restaurant", _get_lang(uid))
+        no_lbl      = _t("attraction",  _get_lang(uid))
+        payload_yes = "餐廳" if _get_lang(uid) == 'zh' else "restaurant"
+        payload_no  = "景點" if _get_lang(uid) == 'zh' else "attraction"
         tpl = ConfirmTemplate(
             text=_t("ask_sustainable", _get_lang(uid)),
             actions=[
@@ -1107,12 +1632,20 @@ def handle_free_command(uid, text, replyTK):
         )
         safe_reply(replyTK, TemplateSendMessage(alt_text=_t("ask_sustainable", _get_lang(uid)), template=tpl), uid)
         return
+   
 
     # 5) 永續 or 一般景點推薦
     if low in sustainable_keys:
-        recommend_sustainable_places(replyTK, uid); return
+        # 餐廳照舊：用 XGBoost 那個永續推薦（你也可以之後改成餐廳選單）
+        recommend_restaurants(replyTK, uid)
+        return
+
     if low in general_keys:
-        recommend_general_places(replyTK, uid); return
+        # 景點：改成出景點選單，讓使用者輸入名稱
+        send_attraction_menu(replyTK, uid)
+        return
+
+
 
     # 6) 附近搜尋
     if low in nearby_keys:
@@ -1126,12 +1659,63 @@ def handle_free_command(uid, text, replyTK):
 
     # 7) 關鍵字搜尋
     if is_keyword:
-        if low in set(keyword_map.values()):
-            zh = next(k for k, v in keyword_map.items() if v == low)
-            search_nearby_places(replyTK, uid, zh)
+        lang = _get_lang(uid)
+
+        # 中文與英文都對應到同一個 type
+        type_map = {
+            "附近餐廳":          "food",
+            "restaurants nearby": "food",
+
+            "停車場":            "parking",
+            "parking":           "parking",
+
+            "住宿":              "stay",
+            "accommodation":     "stay",
+
+            "服務":              "service",
+            "service":           "service",
+        }
+
+        key = text if text in type_map else low
+        t   = type_map.get(key)
+
+        if t:
+            base = "https://phen-line-547744493031.asia-east1.run.app"
+
+            # 🌏 根據語言切換中文／英文版網址
+            if lang == "zh":
+                # 原本的中文：/map_guide?type=...
+                url  = f"{base}/map_guide?type={t}"
+                head = "以下是為您查詢到的地圖連結："
+            else:
+                # 新增的英文版：/map_guide_en?type=...
+                # 會對應到你提供的這四個網址：
+                # service:       .../map_guide_en?type=service
+                # accommodation: .../map_guide_en?type=stay
+                # parking:       .../map_guide_en?type=parking
+                # food:          .../map_guide_en?type=food
+                url  = f"{base}/map_guide_en?type={t}"
+                head = "Here is the map link for your selection:"
+
+            safe_reply(
+                replyTK,
+                [
+                    TextSendMessage(text=head),
+                    TextSendMessage(text=url),
+                ],
+                uid
+            )
         else:
-            search_nearby_places(replyTK, uid, text)
+            # 理論上不會進來，只是保險
+            safe_reply(replyTK, TextSendMessage(text=_t("data_fetch_failed", lang)), uid)
+
         return
+
+    # 7.5) 淡水 XGBoost 個人化推薦
+    if low in best_tamsui_keys:
+        recommend_best_tamsui_spot(replyTK, uid)
+        return
+        
 
     # 8) 租車資訊
     if low in rental_keys:
@@ -1318,74 +1902,45 @@ def handle_message_event(ev, uid, lang, replyTK):
             handle_ask_language(uid, replyTK)
             return
 
-        # —— 1) 自由指令 ——
+               # —— 1) 自由指令 ——
         crowd_keys  = {"景點人潮", "crowd analyzer", "3", "景點人潮(crowd analyzer)"}
         plan_keys   = {"行程規劃", "plan itinerary", "6", "行程規劃(itinerary planning)"}
         rec_keys    = {"景點推薦", "attraction recommendation", "2", "景點推薦(attraction recommendation)"}
-        sust_keys   = {"永續觀光", "sustainable tourism", "2-1"}
-        gen_keys    = {"一般景點推薦", "general recommendation", "2-2"}
+        sust_keys   = {"餐廳", "restaurant", "2-1"}
+        gen_keys    = {"景點", "attraction", "2-2"}
         nearby_keys = {"附近搜尋", "nearby search", "4", "附近搜尋(nearby search)"}
-        rental_keys = {"租車", "car rental information", "5", "租車(car rental information)"}
-        keyword_map = {"餐廳": "restaurants", "停車場": "parking", "風景區": "scenic spots", "住宿": "accommodation"}
+        rental_keys = {"大眾運輸", "public transport", "5", "大眾運輸(public transport)"}
+        keyword_map = {"附近餐廳": "restaurants nearby", "停車場": "parking", "服務": "service", "住宿": "accommodation"}
         is_keyword  = text in keyword_map or low in set(keyword_map.values())
 
-        if msgType == "text":
-            # 行程規劃：若缺資料則引導補齊
-            if low in plan_keys:
-                missing_field = None
-                if shared.user_age.get(uid) is None:
-                    missing_field = 'age'
-                elif shared.user_gender.get(uid) is None:
-                    missing_field = 'gender'
-                elif shared.user_location.get(uid) is None:
-                    missing_field = 'location'
-                elif shared.user_trip_days.get(uid) is None:
-                    missing_field = 'days'
+        # 先抓目前階段
+        stage = shared.user_stage.get(uid, 'ask_language')
+        number_keys = {"1", "2", "3", "4", "5", "6"}
 
-                if missing_field:
-                    current_lang = _get_lang(uid)
-                    if missing_field == 'age':
-                        shared.user_stage[uid] = 'got_age'
-                        safe_reply(replyTK, TextSendMessage(text=_t("ask_age", current_lang)), uid)
-                    elif missing_field == 'gender':
-                        shared.user_stage[uid] = 'got_gender'
-                        handle_gender_buttons(uid, current_lang, replyTK)
-                    elif missing_field == 'location':
-                        shared.user_stage[uid] = 'got_location'
-                        safe_reply(replyTK, FlexMessage.ask_location(), uid)
-                    elif missing_field == 'days':
-                        shared.user_stage[uid] = 'got_days'
-                        days_options = ["兩天一夜", "三天兩夜", "四天三夜", "五天四夜"]
-                        qr_items = [
-                            QuickReplyButton(
-                                action=MessageAction(
-                                    label=to_en(d) if current_lang == 'en' else d,
-                                    text = to_en(d) if current_lang == 'en' else d
-                                )
-                            )
-                            for d in days_options
-                        ]
-                        safe_reply(
-                            replyTK,
-                            TextSendMessage(text=_t("ask_days", current_lang),
-                                            quick_reply=QuickReply(items=qr_items)),
-                            uid
-                        )
+        if msgType == "text":
+            # ✅ 如果正在「選景點」階段，且輸入的是 1～6，
+            #    不要當作主選單指令處理，讓下面的 stage flow
+            #    去執行 handle_attraction_choice()
+            if stage == "choose_attraction" and text in number_keys:
+                pass
+            else:
+                # 主選單指令統一交給 handle_free_command 處理（含行程規劃）
+                if (_is_command(text, plan_keys) or _is_command(text, crowd_keys)
+                        or _is_command(text, rec_keys) or _is_command(text, sust_keys)
+                        or _is_command(text, gen_keys) or _is_command(text, nearby_keys)
+                        or _is_command(text, rental_keys) or is_keyword):
+                    handle_free_command(uid, text, replyTK)
                     return
 
-                # 資料齊全 → 走自由指令分支
-                handle_free_command(uid, text, replyTK)
-                return
-
-            # 其他自由指令/關鍵字
-            if (low in crowd_keys or low in rec_keys or low in sust_keys or 
-                low in gen_keys or low in nearby_keys or low in rental_keys or is_keyword):
-                handle_free_command(uid, text, replyTK)
-                return
 
         # —— 2) 階段流程 ——
         stage = shared.user_stage.get(uid, 'ask_language')
         print(f"[Stage flow] type={msgType}, text={text}, stage={stage}")
+        # —— 處理是否為學生 ——  
+        if stage == "ask_student" and msgType == "text":
+            handle_student(uid, text, replyTK)
+            return
+
 
         # 第一步：選擇語言
         if stage == 'ask_language' and msgType == "text":
@@ -1418,6 +1973,11 @@ def handle_message_event(ev, uid, lang, replyTK):
         # Ready 階段：自由指令
         if stage == 'ready' and msgType == "text":
             handle_free_command(uid, text, replyTK)
+            return
+
+        # 使用者正在選景點（從景點選單來的）
+        if stage == "choose_attraction" and msgType == "text":
+            handle_attraction_choice(uid, text, replyTK)
             return
 
         # 圖片／貼圖

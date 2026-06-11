@@ -1,0 +1,821 @@
+DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>淡水人流示意圖 (Tamsui Crowd Sim) - 穩定版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        
+        /* UI Panel (Left Side - Settings) */
+        .ui-panel {
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        /* Glass Widget (Categories & Weather) */
+        .glass-widget {
+            background: rgba(0, 0, 0, 0.3); 
+            backdrop-filter: blur(8px);       
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+        .glass-widget:hover {
+            background: rgba(0, 0, 0, 0.6); 
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        #debug-status { font-family: monospace; color: #00ffcc; }
+        
+        /* UI Transition */
+        #ui-container {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+            max-height: 75vh;
+            overflow-y: auto; 
+        }
+        #ui-container.hidden-panel {
+            transform: translateX(-120%);
+            opacity: 0;
+            pointer-events: none;
+        }
+        
+        #reopen-btn {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+        }
+        #reopen-btn.hidden-btn {
+            transform: translateX(-120%);
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #ui-container::-webkit-scrollbar { width: 6px; }
+        #ui-container::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }
+        #ui-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+
+        .key-hint {
+            display: inline-block;
+            padding: 2px 6px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background: #222;
+            font-family: monospace;
+            font-size: 10px;
+            color: #aaa;
+            margin: 0 1px;
+        }
+
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Weather Widget (Top Right) -->
+    <div id="weather-widget" class="right-widget absolute top-4 right-4 z-30 rounded-xl p-3 text-white shadow-lg group max-w-[200px]">
+        <div class="flex items-center gap-3 cursor-default">
+            <div class="text-3xl filter drop-shadow-md" id="weather-icon">☁️</div>
+            <div>
+                <div class="text-[10px] font-bold uppercase tracking-wider opacity-70 flex items-center gap-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+                    淡水 Tamsui
+                </div>
+                <div class="flex items-baseline gap-1">
+                    <span id="weather-temp" class="text-xl font-bold">--</span>
+                    <span class="text-xs opacity-80">°C</span>
+                    <span id="weather-desc" class="text-xs ml-1 font-medium opacity-90">Loading...</span>
+                </div>
+            </div>
+        </div>
+        <div class="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-all duration-300 ease-out">
+            <div class="overflow-hidden">
+                <div class="pt-3 mt-2 border-t border-white/20">
+                     <label class="text-[10px] text-gray-300 mb-1 block">特效切換 (Effect)</label>
+                     <select id="weatherOverride" class="w-full bg-black/40 text-xs text-white rounded border border-white/20 p-1 outline-none hover:bg-black/60 cursor-pointer">
+                         <option value="auto">自動 (Auto)</option>
+                         <option value="clear">☀️ 晴天 (Sunny)</option>
+                         <option value="cloudy">☁️ 陰天 (Cloudy)</option>
+                         <option value="rain">🌧️ 下雨 (Rain)</option>
+                     </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Density Indicator (Center Right) -->
+    <div id="density-widget" class="right-widget absolute top-1/2 -translate-y-1/2 right-4 z-30 rounded-xl p-3 text-white shadow-lg transition-all duration-500">
+        <div class="text-[10px] text-gray-300 font-bold uppercase tracking-widest mb-1 text-right">人流密度 Density</div>
+        <div id="density-value" class="text-xl font-black text-right filter drop-shadow-md transition-colors duration-300">--</div>
+    </div>
+
+    <!-- Category Quick Select (Bottom Left - Fixed) -->
+    <div class="glass-widget absolute bottom-8 left-4 z-30 rounded-xl p-3 text-white shadow-lg max-w-[300px]">
+        <label class="text-xs font-bold text-blue-400 uppercase flex items-center gap-1 mb-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg>
+            相簿分類 (Categories)
+        </label>
+        <!-- Grid container for categories (2 cols x 3 rows) -->
+        <div class="grid grid-cols-2 gap-2" id="category-grid"></div>
+    </div>
+
+    <!-- Reopen Button (Top Left) -->
+    <button id="reopen-btn" class="absolute top-4 left-4 z-30 bg-gray-800/80 backdrop-blur text-white p-3 rounded-full border border-gray-600 hover:bg-blue-600 hover:border-blue-400 transition shadow-lg flex items-center justify-center group">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-xs rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none whitespace-nowrap">顯示設定 (Show UI)</span>
+    </button>
+
+    <!-- Mobile Navigation Buttons (Bottom Right, Vertical Stack) -->
+    <div class="fixed bottom-8 right-8 z-40 flex flex-col gap-4 pointer-events-auto">
+        <button id="mobile-prev-btn" class="w-16 h-16 rounded-full bg-black/30 backdrop-blur-sm border border-white/20 text-white flex items-center justify-center hover:bg-black/50 active:scale-95 transition shadow-2xl touch-manipulation" title="上一張 (Previous)">
+            <!-- Up Arrow -->
+            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+        </button>
+        <button id="mobile-next-btn" class="w-16 h-16 rounded-full bg-black/30 backdrop-blur-sm border border-white/20 text-white flex items-center justify-center hover:bg-black/50 active:scale-95 transition shadow-2xl touch-manipulation" title="下一張 (Next)">
+             <!-- Down Arrow -->
+            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+    </div>
+
+    <!-- UI Control Panel (Settings - Hidden by default) -->
+    <div id="ui-container" class="hidden-panel absolute top-4 left-4 z-40 max-w-sm w-full">
+        <div class="ui-panel text-white p-5 rounded-xl w-full transition-all duration-300 relative">
+            
+            <!-- Header -->
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <h1 class="text-lg font-bold flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        淡水人流示意圖
+                    </h1>
+                    <p class="text-[10px] text-gray-400 ml-7">Tamsui Crowd Simulation</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div id="status-dot" class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e]" title="系統狀態 (Status)"></div>
+                    <button id="fullscreen-btn" class="text-gray-400 hover:text-white p-1 rounded hover:bg-white/10 transition" title="全螢幕 (F) / Fullscreen">
+                        <svg id="fullscreen-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                    </button>
+                    <button id="hide-ui-btn" class="text-gray-400 hover:text-white p-1 rounded hover:bg-white/10 transition" title="隱藏介面 (H) / Hide UI">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Settings Section (Slots & Uploads & Controls) -->
+            <div class="mb-4 pb-4 border-b border-gray-700">
+                <!-- Slot Selectors -->
+                <div>
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-xs font-bold text-purple-400 uppercase flex items-center gap-1">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 2H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z"/></svg>
+                            人流分類 (Density)
+                        </label>
+                        <span class="text-[9px] text-gray-500">切換 (Switch): <span class="key-hint">←</span> <span class="key-hint">→</span></span>
+                    </div>
+                    <div class="grid grid-cols-5 gap-2" id="slot-grid"></div>
+                    
+                    <!-- Compact Upload Buttons -->
+                    <div class="flex gap-2 mt-3">
+                        <button id="btn-upload-1" onclick="document.getElementById('fileInput1').click()" class="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300 border border-gray-600 flex items-center justify-center gap-1 transition">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            上傳左圖 (Upload Left)
+                        </button>
+                        <button id="btn-upload-2" onclick="document.getElementById('fileInput2').click()" class="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300 border border-gray-600 flex items-center justify-center gap-1 transition">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            上傳右圖 (Upload Right)
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Hidden Inputs -->
+            <input type="file" id="fileInput1" accept="image/*" class="hidden"/>
+            <input type="file" id="fileInput2" accept="image/*" class="hidden"/>
+
+            <!-- Stitching Controls -->
+            <div class="space-y-5 border-t border-gray-700 pt-4">
+                <div>
+                    <label class="text-xs font-bold text-yellow-400 mb-2 uppercase flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-6-6m6 6v-4.8m0 4.8h-4.8"/></svg>
+                        拼接與修復 (Stitching)
+                    </label>
+                    <div class="mb-3">
+                        <div class="flex justify-between mb-1">
+                            <span class="text-[10px] text-gray-300">縫合重疊 (Overlap)</span>
+                            <span id="overlapVal" class="text-[10px] text-blue-400">0%</span>
+                        </div>
+                        <input type="range" id="overlapSlider" min="0" max="30" step="0.5" value="0" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-yellow-500">
+                    </div>
+                    <div class="mb-4">
+                        <div class="flex justify-between mb-1">
+                            <span class="text-[10px] text-gray-300 font-bold text-red-300">上下裁切 (Crop)</span>
+                            <span id="cropVal" class="text-[10px] text-red-400">0%</span>
+                        </div>
+                        <input type="range" id="cropSlider" min="0" max="20" step="0.5" value="0" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-red-500">
+                    </div>
+                    <div class="flex items-center justify-between p-3 bg-gray-800/80 rounded-lg border border-yellow-500/30">
+                        <div>
+                            <label for="smartFillToggle" class="text-sm text-gray-100 font-bold cursor-pointer select-none block">智慧填補黑邊 (Smart Fill)</label>
+                            <span class="text-[10px] text-gray-400 block">Extend edges to fill gaps</span>
+                        </div>
+                        <div class="relative inline-block w-10 h-5 align-middle select-none transition duration-200 ease-in">
+                            <input type="checkbox" name="toggle" id="smartFillToggle" checked class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer transition-all duration-300 left-0"/>
+                            <label for="smartFillToggle" class="toggle-label block overflow-hidden h-5 rounded-full bg-gray-600 cursor-pointer"></label>
+                        </div>
+                        <style>
+                            #smartFillToggle:checked { right: 0; border-color: #10B981; }
+                            #smartFillToggle:checked + .toggle-label { background-color: #10B981; }
+                            #smartFillToggle { top: 0; left: 0; transition: all 0.3s; }
+                            #smartFillToggle:checked { transform: translateX(100%); }
+                        </style>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs font-bold uppercase text-gray-400 flex justify-between mb-2">
+                        視野縮放 (FOV)
+                    </label>
+                    <input type="range" id="fovSlider" min="30" max="120" step="1" value="75" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                </div>
+                <div class="flex items-center gap-3 p-2 bg-gray-800/50 rounded-lg border border-gray-700">
+                     <input type="checkbox" id="autoRotateToggle" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-500 rounded focus:ring-blue-500 focus:ring-2">
+                     <label for="autoRotateToggle" class="text-sm text-gray-200 cursor-pointer select-none">自動旋轉 (Auto Rotate)</label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Input Modal -->
+    <div id="inputModal" class="fixed inset-0 z-[100] hidden modal-overlay flex items-center justify-center opacity-0 transition-opacity duration-300">
+        <div class="bg-gray-800 border border-gray-600 rounded-xl p-6 w-80 shadow-2xl transform scale-95 transition-transform duration-300" id="inputModalContent">
+            <h3 class="text-lg font-bold text-white mb-2">新增資料夾 (Add Folder)</h3>
+            <p class="text-gray-400 text-xs mb-4">Please enter a name for the project.</p>
+            <input type="text" id="inputModalField" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white mb-6 focus:border-blue-500 outline-none transition" placeholder="例如：客廳...">
+            <div class="flex justify-end gap-2">
+                <button id="inputModalCancel" class="px-4 py-2 rounded text-sm text-gray-300 hover:bg-gray-700 transition">取消 (Cancel)</button>
+                <button id="inputModalConfirm" class="px-4 py-2 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 transition font-bold shadow-lg">確定 (Confirm)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Confirm Modal -->
+    <div id="confirmModal" class="fixed inset-0 z-[100] hidden modal-overlay flex items-center justify-center opacity-0 transition-opacity duration-300">
+        <div class="bg-gray-800 border border-red-900/50 rounded-xl p-6 w-80 shadow-2xl transform scale-95 transition-transform duration-300" id="confirmModalContent">
+            <h3 class="text-lg font-bold text-red-400 mb-2">Are you sure you want to delete?</h3>
+            <p class="text-gray-300 text-sm mb-6">This action cannot be undone.</p>
+            <div class="flex justify-end gap-2">
+                <button id="confirmModalCancel" class="px-4 py-2 rounded text-sm text-gray-300 hover:bg-gray-700 transition">取消 (Cancel)</button>
+                <button id="confirmModalAction" class="px-4 py-2 rounded text-sm bg-red-600 text-white hover:bg-red-500 transition font-bold shadow-lg">刪除 (Delete)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- Scripts -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Constants & UI State ---
+        const uiContainer = document.getElementById('ui-container');
+        const reopenBtn = document.getElementById('reopen-btn');
+        const hideUiBtn = document.getElementById('hide-ui-btn');
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        let isUiVisible = false; // Default Hidden
+
+        // --- Data Structure: 6 Categories x 5 Slots ---
+        const categoryNames = [
+            '金色水岸 (Golden Shore)', 
+            '淡水老街 (Old Street)', 
+            '紅毛城 (Fort San Domingo)', 
+            '漁人碼頭 (Fisherman\'s Wharf)', 
+            '滬尾砲台 (Hobe Fort)', 
+            '沙崙海灘 (Shalun Beach)'
+        ];
+        const slotNames = ['人少 (Few)', '人稍少 (Some)', '普通 (Normal)', '人稍多 (Many)', '人多 (Crowded)'];
+        
+        const galleryData = Array.from({ length: 6 }, (_, i) => ({
+            id: `cat-${i}`,
+            name: categoryNames[i],
+            slots: Array.from({ length: 5 }, (_, j) => ({
+                id: `slot-${i}-${j}`,
+                name: slotNames[j],
+                img1: null, 
+                img2: null,
+                params: { overlap: 0, crop: 0, smartFill: true, fov: 75 }
+            }))
+        }));
+
+        let currentCatIdx = 0;
+        let currentSlotIdx = 0;
+
+        // --- 3D Scene Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x000000); 
+        scene.fog = new THREE.FogExp2(0x000000, 0.0);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+        camera.position.set(0, 0, 0.1); 
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.autoRotate = false; 
+        controls.autoRotateSpeed = -1.0; 
+        controls.enableZoom = false; 
+        controls.enablePan = false; 
+        controls.rotateSpeed = -0.5;
+        
+        controls.listenToKeyEvents(window);
+
+        let mesh;
+        let weatherParticles;
+        const keys = { w: false, a: false, s: false, d: false };
+
+        // --- CORE LOGIC FUNCTIONS (HOISTED) ---
+
+        function createDefaultScene() {
+            if (mesh) {
+                scene.remove(mesh);
+                if (mesh.geometry) mesh.geometry.dispose();
+                if (mesh.material) mesh.material.dispose();
+            }
+            const geometry = new THREE.SphereGeometry(500, 60, 40);
+            geometry.scale(-1, 1, 1);
+            const material = new THREE.MeshBasicMaterial({ color: 0x333333, wireframe: true, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+            mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+        }
+
+        function updateMeshWithTexture(texture) {
+            if (mesh) {
+                scene.remove(mesh);
+                if (mesh.geometry) mesh.geometry.dispose();
+                if (mesh.material) mesh.material.dispose();
+            }
+            const geometry = new THREE.SphereGeometry(500, 60, 40);
+            geometry.scale(-1, 1, 1);
+            const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+            mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+            
+            // Re-apply weather tint after texture load
+            const weatherSelect = document.getElementById('weatherOverride');
+            const activeWeather = weatherSelect.value === 'auto' ? getWeatherStatus(fetchedWeatherCode).effect : weatherSelect.value;
+            updateWeatherEffects(activeWeather);
+        }
+
+        function resizeImage(img, targetHeight) {
+            return new Promise(resolve => {
+                if (Math.abs(img.height - targetHeight) < 2) { resolve(img); return; }
+                const aspectRatio = img.width / img.height;
+                const newWidth = targetHeight * aspectRatio;
+                const canvas = document.createElement('canvas');
+                canvas.width = newWidth; canvas.height = targetHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, newWidth, targetHeight);
+                const resizedImg = new Image();
+                resizedImg.onload = () => resolve(resizedImg);
+                resizedImg.src = canvas.toDataURL('image/jpeg', 0.9); 
+            });
+        }
+
+        async function processImages(slotData) {
+            if (!slotData.img1 && !slotData.img2) {
+                createDefaultScene();
+                return;
+            }
+
+            const overlapPercent = slotData.params.overlap;
+            const cropPercent = slotData.params.crop;
+            const useSmartFill = slotData.params.smartFill;
+
+            let targetHeight = 0;
+            if (slotData.img1) targetHeight = Math.max(targetHeight, slotData.img1.element.height);
+            if (slotData.img2) targetHeight = Math.max(targetHeight, slotData.img2.element.height);
+
+            let rImg1, rImg2;
+            if (slotData.img1) rImg1 = await resizeImage(slotData.img1.element, targetHeight);
+            if (slotData.img2) rImg2 = await resizeImage(slotData.img2.element, targetHeight);
+
+            let stitchedWidth = 0;
+            if (rImg1 && rImg2) {
+                const overlapPx = (rImg1.width + rImg2.width) * (overlapPercent / 100);
+                stitchedWidth = rImg1.width + rImg2.width - overlapPx;
+            } else {
+                stitchedWidth = rImg1 ? rImg1.width : rImg2.width;
+            }
+
+            const cropPx = Math.floor(targetHeight * (cropPercent / 100));
+            const sourceVisibleHeight = targetHeight - (cropPx * 2);
+
+            let finalCanvasHeight = targetHeight; 
+            let yOffset = 0; 
+
+            if (useSmartFill) {
+                const idealHeight = stitchedWidth / 2;
+                if (idealHeight > sourceVisibleHeight) {
+                     finalCanvasHeight = idealHeight;
+                     yOffset = (idealHeight - sourceVisibleHeight) / 2;
+                } else {
+                    finalCanvasHeight = sourceVisibleHeight;
+                    yOffset = 0;
+                }
+            } else {
+                finalCanvasHeight = sourceVisibleHeight;
+            }
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = stitchedWidth;
+            canvas.height = finalCanvasHeight;
+            
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, stitchedWidth, finalCanvasHeight);
+
+            const drawCropped = (img, destX) => {
+                ctx.drawImage(img, 0, cropPx, img.width, sourceVisibleHeight, destX, yOffset, img.width, sourceVisibleHeight);
+                if (useSmartFill && finalCanvasHeight > sourceVisibleHeight) {
+                    ctx.drawImage(img, 0, cropPx + 2, img.width, 1, destX, 0, img.width, yOffset + 1);
+                    ctx.drawImage(img, 0, targetHeight - cropPx - 2, img.width, 1, destX, yOffset + sourceVisibleHeight - 1, img.width, finalCanvasHeight - (yOffset + sourceVisibleHeight) + 2);
+                }
+            };
+
+            if (rImg1 && rImg2) {
+                const overlapPx = (rImg1.width + rImg2.width) * (overlapPercent / 100);
+                drawCropped(rImg1, 0);
+                drawCropped(rImg2, rImg1.width - overlapPx);
+            } else if (rImg1) drawCropped(rImg1, 0);
+            else if (rImg2) drawCropped(rImg2, 0);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.minFilter = THREE.LinearFilter; 
+            updateMeshWithTexture(texture);
+        }
+
+        // --- Weather System ---
+        const particleTexture = createParticleTexture();
+        function createParticleTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32; canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad; ctx.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function updateWeatherEffects(type) {
+            if (weatherParticles) {
+                scene.remove(weatherParticles);
+                weatherParticles.geometry.dispose();
+                weatherParticles.material.dispose();
+                weatherParticles = null;
+            }
+            scene.fog.density = 0;
+            // Reset tint
+            if(mesh && mesh.material) mesh.material.color.setHex(0xffffff);
+
+            if (type === 'rain') {
+                const count = 15000;
+                const positions = [], velocities = [];
+                for(let i=0; i<count; i++) {
+                    const r = 50 + Math.random() * 400;
+                    const theta = Math.random() * Math.PI * 2;
+                    positions.push(r * Math.cos(theta), (Math.random() - 0.5) * 1000, r * Math.sin(theta));
+                    velocities.push(0, - (2 + Math.random() * 2), 0);
+                }
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                geometry.userData = { velocities: velocities };
+                const material = new THREE.PointsMaterial({ color: 0xaaaaaa, size: 2, map: particleTexture, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
+                weatherParticles = new THREE.Points(geometry, material);
+                scene.add(weatherParticles);
+                
+                // Rain mood
+                scene.fog.color.setHex(0x333333); scene.fog.density = 0.0025; 
+                if(mesh && mesh.material) mesh.material.color.setHex(0x777777);
+
+            } else if (type === 'cloudy') {
+                // Cloudy mood: subtle fog, dim tint (75% brightness)
+                scene.fog.color.setHex(0x555555); // Darker grey fog
+                scene.fog.density = 0.0006; 
+                if(mesh && mesh.material) mesh.material.color.setHex(0xBFBFBF); // Tint image darker (75% brightness)
+            }
+        }
+
+        function animateParticles() {
+            if (weatherParticles) {
+                const positions = weatherParticles.geometry.attributes.position.array;
+                const velocities = weatherParticles.geometry.userData.velocities;
+                for (let i = 0; i < positions.length; i += 3) {
+                    positions[i + 1] += velocities[i/3 * 3 + 1]; 
+                    if (positions[i + 1] < -500) positions[i + 1] = 500;
+                }
+                weatherParticles.geometry.attributes.position.needsUpdate = true;
+            }
+        }
+
+        // --- Weather API ---
+        const weatherTemp = document.getElementById('weather-temp');
+        const weatherDesc = document.getElementById('weather-desc');
+        const weatherIcon = document.getElementById('weather-icon');
+        const weatherOverride = document.getElementById('weatherOverride');
+        let fetchedWeatherCode = 0;
+
+        async function fetchTamsuiWeather() {
+            try {
+                const res = await fetch('https://api.open-meteo.com/v1/forecast?latitude=25.1733&longitude=121.4431&current_weather=true&timezone=auto');
+                const data = await res.json();
+                if (data.current_weather) {
+                    fetchedWeatherCode = data.current_weather.weathercode;
+                    weatherTemp.innerText = data.current_weather.temperature;
+                    const info = getWeatherStatus(fetchedWeatherCode);
+                    weatherDesc.innerText = info.desc;
+                    weatherIcon.innerText = info.icon;
+                    if (weatherOverride.value === 'auto') updateWeatherEffects(info.effect);
+                }
+            } catch (e) { console.error(e); weatherDesc.innerText = "連線失敗 (Connection Failed)"; }
+        }
+        function getWeatherStatus(code) {
+            if (code === 0) return { desc: "晴天 (Sunny)", icon: "☀️", effect: 'clear' };
+            if (code <= 3 || code === 45 || code === 48) return { desc: "陰天 (Cloudy)", icon: "☁️", effect: 'cloudy' };
+            return { desc: "下雨 (Rainy)", icon: "🌧️", effect: 'rain' };
+        }
+        weatherOverride.addEventListener('change', (e) => {
+            if (e.target.value === 'auto') {
+                const info = getWeatherStatus(fetchedWeatherCode);
+                updateWeatherEffects(info.effect);
+            } else {
+                updateWeatherEffects(e.target.value);
+            }
+        });
+        fetchTamsuiWeather(); setInterval(fetchTamsuiWeather, 300000);
+
+
+        // --- Gallery UI Rendering ---
+
+        function renderGalleryUI() {
+            const catGrid = document.getElementById('category-grid');
+            catGrid.innerHTML = '';
+            galleryData.forEach((cat, idx) => {
+                const btn = document.createElement('button');
+                btn.className = `text-[10px] py-1.5 rounded border transition font-bold ${idx === currentCatIdx 
+                    ? 'bg-blue-600/80 border-blue-400 text-white shadow-lg backdrop-blur-sm' 
+                    : 'bg-gray-800/40 border-gray-600/50 text-gray-400 hover:bg-gray-700/50 backdrop-blur-sm'}`;
+                btn.innerText = cat.name;
+                btn.onclick = () => switchCategory(idx);
+                catGrid.appendChild(btn);
+            });
+
+            const slotGrid = document.getElementById('slot-grid');
+            slotGrid.innerHTML = '';
+            const currentSlots = galleryData[currentCatIdx].slots;
+            
+            currentSlots.forEach((slot, idx) => {
+                const hasData = slot.img1 || slot.img2;
+                const btn = document.createElement('button');
+                btn.className = `text-xs py-2 rounded border transition font-bold relative ${idx === currentSlotIdx 
+                    ? 'bg-purple-600 border-purple-400 text-white shadow-lg' 
+                    : 'bg-gray-800 border-gray-600 text-gray-400 hover:bg-gray-700'}`;
+                
+                // Use numeric index for small buttons, name is in status display
+                btn.innerText = `${idx + 1}`; 
+                
+                if (hasData) {
+                    const dot = document.createElement('div');
+                    dot.className = `absolute top-1 right-1 w-1.5 h-1.5 rounded-full ${idx === currentSlotIdx ? 'bg-white' : 'bg-green-500'}`;
+                    btn.appendChild(dot);
+                }
+
+                btn.onclick = () => switchSlot(idx);
+                slotGrid.appendChild(btn);
+            });
+
+            loadCurrentSlotData();
+        }
+
+        function switchCategory(idx) {
+            currentCatIdx = idx;
+            currentSlotIdx = 0; 
+            renderGalleryUI();
+        }
+
+        function switchSlot(idx) {
+            currentSlotIdx = idx;
+            renderGalleryUI();
+        }
+
+        function updateDensityUI(slotIndex) {
+            const widget = document.getElementById('density-widget');
+            const valueEl = document.getElementById('density-value');
+            const names = ['人少 (Few)', '人稍少 (Some)', '普通 (Normal)', '人稍多 (Many)', '人多 (Crowded)'];
+            const colors = ['#4ade80', '#2dd4bf', '#facc15', '#fb923c', '#ef4444']; 
+
+            if (valueEl) {
+                valueEl.innerText = names[slotIndex];
+                valueEl.style.color = colors[slotIndex];
+            }
+        }
+
+        function loadCurrentSlotData() {
+            const slot = galleryData[currentCatIdx].slots[currentSlotIdx];
+            
+            document.getElementById('overlapSlider').value = slot.params.overlap;
+            document.getElementById('overlapVal').innerText = slot.params.overlap + '%';
+            
+            document.getElementById('cropSlider').value = slot.params.crop;
+            document.getElementById('cropVal').innerText = slot.params.crop + '%';
+            
+            document.getElementById('smartFillToggle').checked = slot.params.smartFill;
+            
+            document.getElementById('fovSlider').value = slot.params.fov;
+            camera.fov = slot.params.fov;
+            camera.updateProjectionMatrix();
+
+            // SAFE UPDATE: Check if file status update logic needs to run
+            updateUploadButtons(slot);
+            
+            updateDensityUI(currentSlotIdx);
+
+            // Reset inputs visual value
+            document.getElementById('fileInput1').value = '';
+            document.getElementById('fileInput2').value = '';
+
+            processImages(slot);
+        }
+
+        function updateUploadButtons(slot) {
+            const btn1 = document.getElementById('btn-upload-1');
+            const btn2 = document.getElementById('btn-upload-2');
+            
+            if (slot.img1) {
+                btn1.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 左圖 (Loaded)`;
+                btn1.className = "flex-1 py-1.5 bg-green-900 hover:bg-green-800 rounded text-[10px] text-green-200 border border-green-700 flex items-center justify-center gap-1 transition";
+            } else {
+                btn1.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> 上傳左圖 (Upload Left)`;
+                btn1.className = "flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300 border border-gray-600 flex items-center justify-center gap-1 transition";
+            }
+
+            if (slot.img2) {
+                btn2.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 右圖 (Loaded)`;
+                btn2.className = "flex-1 py-1.5 bg-green-900 hover:bg-green-800 rounded text-[10px] text-green-200 border border-green-700 flex items-center justify-center gap-1 transition";
+            } else {
+                btn2.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> 上傳右圖 (Upload Right)`;
+                btn2.className = "flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300 border border-gray-600 flex items-center justify-center gap-1 transition";
+            }
+        }
+
+        function navigateSlot(direction) {
+            let newIdx = currentSlotIdx + direction;
+            if (newIdx < 0) newIdx = 4;
+            if (newIdx > 4) newIdx = 0;
+            switchSlot(newIdx);
+        }
+
+        function saveImageToSlot(slotIdx, file) {
+            const slot = galleryData[currentCatIdx].slots[currentSlotIdx]; 
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const entry = { file: file, url: e.target.result, element: img };
+                    if (slotIdx === 1) slot.img1 = entry;
+                    else slot.img2 = entry;
+                    renderGalleryUI(); 
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // --- Event Listeners ---
+
+        document.getElementById('fileInput1').addEventListener('change', (e) => { if (e.target.files[0]) saveImageToSlot(1, e.target.files[0]); });
+        document.getElementById('fileInput2').addEventListener('change', (e) => { if (e.target.files[0]) saveImageToSlot(2, e.target.files[0]); });
+
+        const updateCurrentSlotParams = () => {
+             const slot = galleryData[currentCatIdx].slots[currentSlotIdx];
+             processImages(slot);
+        };
+
+        document.getElementById('overlapSlider').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            document.getElementById('overlapVal').innerText = val + '%';
+            galleryData[currentCatIdx].slots[currentSlotIdx].params.overlap = val;
+            updateCurrentSlotParams();
+        });
+
+        document.getElementById('cropSlider').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            document.getElementById('cropVal').innerText = val + '%';
+            galleryData[currentCatIdx].slots[currentSlotIdx].params.crop = val;
+            updateCurrentSlotParams();
+        });
+
+        document.getElementById('smartFillToggle').addEventListener('change', (e) => {
+            galleryData[currentCatIdx].slots[currentSlotIdx].params.smartFill = e.target.checked;
+            updateCurrentSlotParams();
+        });
+
+        document.getElementById('fovSlider').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            camera.fov = val; camera.updateProjectionMatrix();
+            galleryData[currentCatIdx].slots[currentSlotIdx].params.fov = val;
+        });
+
+        // Global UI
+        hideUiBtn.addEventListener('click', toggleUI);
+        reopenBtn.addEventListener('click', toggleUI);
+        fullscreenBtn.addEventListener('click', toggleFullscreen);
+        container.addEventListener('dblclick', toggleFullscreen);
+
+        function toggleUI() {
+            isUiVisible = !isUiVisible;
+            if (isUiVisible) { uiContainer.classList.remove('hidden-panel'); reopenBtn.classList.add('hidden-btn'); } 
+            else { uiContainer.classList.add('hidden-panel'); reopenBtn.classList.remove('hidden-btn'); }
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                 const el = document.documentElement;
+                 const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+                 if (req) req.call(el).catch(() => {
+                     if(confirm("Browser restriction: Unable to enable fullscreen in current window.\n\nOpen in a new window? (Requires re-uploading images)")) {
+                         const blob = new Blob([document.documentElement.outerHTML], {type: 'text/html'});
+                         window.open(URL.createObjectURL(blob), '_blank');
+                     } else { if(isUiVisible) toggleUI(); }
+                 });
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            const key = e.key; 
+            if (key.toLowerCase() === 'h') toggleUI();
+            if (key.toLowerCase() === 'f') toggleFullscreen();
+            if (key === 'ArrowLeft') navigateSlot(-1);
+            if (key === 'ArrowRight') navigateSlot(1);
+            if (['w', 'a', 's', 'd', 'W', 'A', 'S', 'D'].includes(key)) {
+                 controls.autoRotate = false;
+                 document.getElementById('autoRotateToggle').checked = false;
+            }
+        });
+
+        // Mobile Navigation
+        const mobilePrevBtn = document.getElementById('mobile-prev-btn');
+        const mobileNextBtn = document.getElementById('mobile-next-btn');
+        
+        if(mobilePrevBtn) mobilePrevBtn.addEventListener('click', () => navigateSlot(-1));
+        if(mobileNextBtn) mobileNextBtn.addEventListener('click', () => navigateSlot(1));
+
+        document.getElementById('autoRotateToggle').addEventListener('change', (e) => { controls.autoRotate = e.target.checked; });
+
+        // Init
+        renderGalleryUI();
+        createDefaultScene();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (typeof controls.rotateLeft === 'function') {
+                if (keys.a || keys.A) controls.rotateLeft(0.03); 
+                if (keys.d || keys.D) controls.rotateLeft(-0.03);
+            }
+            controls.update();
+            renderer.render(scene, camera);
+            animateParticles();
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
