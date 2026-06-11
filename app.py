@@ -860,7 +860,7 @@ def send_crowd_analysis(tk,uid):
 
 # 固定的餐廳/景點清單（我要的 6 個點）
 PLACE_URLS = {
-    "淡水老街": "https://newtaipei.travel/en/attractions/detail/111451",
+    "淡水老街": "https://newtaipei.travel/zh-tw/attractions/detail/109658",
     "漁人碼頭": "https://newtaipei.travel/zh-tw/attractions/detail/109659",
     "金色水岸": "https://newtaipei.travel/zh-tw/attractions/detail/209657",
     "滬尾砲台": "https://newtaipei.travel/zh-tw/attractions/detail/110398",
